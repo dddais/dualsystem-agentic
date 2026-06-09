@@ -1,0 +1,38 @@
+# Drive a real (or mocked) x2robot through the x2robot MCP server.
+# The planner calls the MCP `execute` tool, so no separate VLA executor is needed.
+vlm:
+  provider: openai_compatible
+  model: gpt-4o
+  base_url: ${OPENAI_BASE_URL}
+  api_key: ${OPENAI_API_KEY}
+  timeout: 60.0
+  sampling_params:
+    temperature: 0.7
+    max_tokens: 512
+
+executor:
+  provider: noop
+
+mcp:
+  provider: sdk
+  servers:
+    - namespace: x2robot
+      description: X2 robot MCP tools exposed as x2robot___<tool_name>.
+      transport: stdio
+      command: python
+      args: ["mcp_server/x2robot_mcp_server/server.py"]
+      env:
+        # Mock bridge default; set to http://<robot_ip>:8766 for a real x2robot.
+        X2ROBOT_BRIDGE_URL: http://localhost:8766
+
+loop:
+  max_steps: 20
+
+dataloader:
+  provider: http
+  # x2robot bridge exposes a concatenated camera image at /cameras/concatenated.
+  # For a real robot, set to http://<robot_ip>:8766/cameras/concatenated
+  url: http://localhost:8766/cameras/concatenated
+  timeout: 10.0
+  image_key: concatenated_image
+  label: main

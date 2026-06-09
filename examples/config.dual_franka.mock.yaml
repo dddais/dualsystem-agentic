@@ -1,0 +1,84 @@
+# Local smoke-test config for the dual_franka HTTP adapter.
+# Start the mock bridge first:
+#   python mcp_server/dual_franka_mcp_server/mock_dual_franka_bridge.py --port 8768
+vlm:
+  provider: scripted
+  script:
+    - tool_calls:
+        - name: dual_franka___fetch_env
+          arguments: {}
+      subtasks:
+        - approach the cube
+        - pick up the cube
+      subtask_index: 0
+      should_execute: false
+    - tool_calls:
+        - name: dual_franka___execute
+          arguments:
+            subtask: approach the cube
+      subtask_index: 0
+    - tool_calls:
+        - name: dual_franka___monitor
+          arguments:
+            subtask: approach the cube
+            subtask_index: 0
+      subtask_index: 0
+      should_execute: false
+    - tool_calls:
+        - name: dual_franka___monitor
+          arguments:
+            subtask: approach the cube
+            subtask_index: 0
+      subtask_index: 0
+      should_execute: false
+    - tool_calls:
+        - name: dual_franka___execute
+          arguments:
+            subtask: pick up the cube
+      subtask_index: 1
+    - tool_calls:
+        - name: dual_franka___monitor
+          arguments:
+            subtask: pick up the cube
+            subtask_index: 1
+      subtask_index: 1
+      should_execute: false
+    - tool_calls:
+        - name: dual_franka___monitor
+          arguments:
+            subtask: pick up the cube
+            subtask_index: 1
+      subtask_index: 1
+      should_execute: false
+    - task_complete: true
+
+executor:
+  provider: noop
+
+mcp:
+  provider: sdk
+  servers:
+    - namespace: dual_franka
+      description: Mock dual-Franka HTTP bridge tools exposed as dual_franka___<tool_name>.
+      transport: stdio
+      command: python
+      args: ["mcp_server/dual_franka_mcp_server/server.py"]
+      env:
+        DUAL_FRANKA_BRIDGE_URL: http://localhost:8768
+
+loop:
+  max_steps: 12
+
+dataloader:
+  provider: http
+  url: http://localhost:8768/cameras/concatenated
+  timeout: 5.0
+  image_key: concatenated_image
+  label: main
+
+interaction:
+  provider: console
+  show_raw_json: false
+
+logging:
+  enabled: false

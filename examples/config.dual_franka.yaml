@@ -1,0 +1,53 @@
+# dual_franka real-robot deployment config.
+# Image acquisition, monitor, execution, and extra robot utilities all go through HTTP.
+vlm:
+  provider: openai_compatible
+  model: gpt-4o
+  base_url: ${OPENAI_BASE_URL}
+  api_key: ${OPENAI_API_KEY}
+  timeout: 60.0
+  sampling_params:
+    temperature: 0.2
+    max_tokens: 768
+
+executor:
+  # Execution is handled by dual_franka___execute over MCP -> HTTP.
+  provider: noop
+
+mcp:
+  provider: sdk
+  servers:
+    - namespace: dual_franka
+      description: Dual-Franka HTTP bridge tools exposed as dual_franka___<tool_name>.
+      transport: stdio
+      command: python
+      args: ["mcp_server/dual_franka_mcp_server/server.py"]
+      env:
+        # Set this to http://<robot_ip>:<port> on the real robot bridge.
+        DUAL_FRANKA_BRIDGE_URL: http://localhost:8767
+        DUAL_FRANKA_FETCH_ENV_PATH: /environment
+        DUAL_FRANKA_MONITOR_PATH: /task/monitor
+        DUAL_FRANKA_EXECUTE_PATH: /task/execute
+        DUAL_FRANKA_STOP_PATH: /task/stop
+        DUAL_FRANKA_RESET_PATH: /task/reset
+        DUAL_FRANKA_ESTOP_PATH: /task/emergency_stop
+
+loop:
+  max_steps: 20
+
+dataloader:
+  provider: http
+  # Set this to http://<robot_ip>:<port>/cameras/concatenated on the real robot bridge.
+  url: http://localhost:8767/cameras/concatenated
+  timeout: 10.0
+  image_key: concatenated_image
+  label: main
+
+interaction:
+  provider: console
+  show_raw_json: false
+
+logging:
+  enabled: true
+  root_dir: runs
+  save_images: true

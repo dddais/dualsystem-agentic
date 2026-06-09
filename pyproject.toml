@@ -1,0 +1,48 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "dualsystem-agentic"
+version = "0.1.0"
+description = "Agentic robot Dual-System framework: VLM planner + MCP tools + VLA executor"
+readme = "README.md"
+requires-python = ">=3.10"
+license = {text = "Apache-2.0"}
+authors = [{name = "Dual-System Agentic Contributors"}]
+keywords = [
+    "robotics",
+    "agent-loop",
+    "mcp",
+    "vision-language-models",
+    "vla",
+]
+dependencies = [
+    "pyyaml",
+    "pillow",
+]
+
+[project.optional-dependencies]
+mcp = [
+    "mcp",
+    "httpx",
+]
+local-qwen = [
+    "torch",
+    "transformers",
+    "qwen-vl-utils",
+]
+dev = [
+    "pytest",
+]
+
+[project.scripts]
+dualsystem-agentic = "dualsystem_agentic.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+addopts = "-q"
+pythonpath = ["src"]
+testpaths = ["tests"]

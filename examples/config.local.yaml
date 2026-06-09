@@ -1,0 +1,23 @@
+# Local Qwen-VL planner + HTTP VLA executor + real MCP servers.
+vlm:
+  provider: local_qwen
+  model_path: /path/to/Qwen3-VL-8B-Instruct
+  model_family: qwen3
+  device: cuda:0
+  dtype: bf16
+  sampling_params:
+    do_sample: true
+    temperature: 1.0
+    max_new_tokens: 512
+
+executor:
+  provider: http
+  endpoint: http://localhost:8000/execute
+  timeout: 30.0
+
+mcp:
+  provider: sdk
+  servers_file: examples/mcp_servers.example.json
+
+loop:
+  max_steps: 20

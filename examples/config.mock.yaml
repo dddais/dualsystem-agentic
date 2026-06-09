@@ -1,0 +1,111 @@
+# Offline online verification — no robot, no bridge, no VLM API, no network.
+vlm:
+  provider: scripted
+  script:
+    - tool_calls:
+        - name: mock___fetch_env
+          arguments: {}
+      subtasks:
+        - approach the target object
+        - pick up the target object
+      subtask_index: 0
+      should_execute: false
+    - tool_calls:
+        - name: mock___execute
+          arguments:
+            subtask: approach the target object
+      subtask_index: 0
+    - tool_calls:
+        - name: mock___monitor
+          arguments:
+            subtask: approach the target object
+            subtask_index: 0
+      subtask_index: 0
+      should_execute: false
+    - tool_calls:
+        - name: mock___monitor
+          arguments:
+            subtask: approach the target object
+            subtask_index: 0
+      subtask_index: 0
+      should_execute: false
+    - tool_calls:
+        - name: mock___execute
+          arguments:
+            subtask: pick up the target object
+      subtask_index: 1
+    - tool_calls:
+        - name: mock___monitor
+          arguments:
+            subtask: pick up the target object
+            subtask_index: 1
+      subtask_index: 1
+      should_execute: false
+    - tool_calls:
+        - name: mock___monitor
+          arguments:
+            subtask: pick up the target object
+            subtask_index: 1
+      subtask_index: 1
+      should_execute: false
+    - task_complete: true
+
+executor:
+  provider: noop
+
+mcp:
+  provider: fake
+  tools:
+    - namespace: mock
+      name: fetch_env
+      description: Get the mocked robot and scene state.
+      parameters:
+        type: object
+        properties: {}
+      result:
+        objects: ["cup", "table", "shelf"]
+        gripper: empty
+    - namespace: mock
+      name: execute
+      description: Start executing one mocked subtask.
+      parameters:
+        type: object
+        required: ["subtask"]
+        properties:
+          subtask:
+            type: string
+      result:
+        executed: true
+      echo_args: true
+    - namespace: mock
+      name: monitor
+      description: Report mocked subtask status.
+      parameters:
+        type: object
+        properties:
+          subtask:
+            type: string
+          subtask_index:
+            type: integer
+      results:
+        - status: running
+        - status: success
+        - status: running
+        - status: success
+      cycle_results: true
+      echo_args: true
+
+loop:
+  max_steps: 12
+
+dataloader:
+  provider: mock
+
+interaction:
+  provider: console
+  show_raw_json: false
+
+logging:
+  enabled: true
+  root_dir: runs
+  save_images: true
