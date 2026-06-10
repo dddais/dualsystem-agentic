@@ -10,17 +10,36 @@ import pytest
 from dualsystem_agentic.io.dataloader import HTTPDataLoader
 
 
+def _load_module(relative_path: str, name: str):
+    path = Path(__file__).resolve().parents[1] / relative_path
+    spec = importlib.util.spec_from_file_location(name, path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 def _load_dual_franka_server_module():
     try:
         import mcp  # noqa: F401
     except ImportError:
         pytest.skip("mcp SDK is not installed")
-    path = Path(__file__).resolve().parents[1] / "mcp_server" / "dual_franka_mcp_server" / "server.py"
-    spec = importlib.util.spec_from_file_location("dual_franka_mcp_server_for_test", path)
-    assert spec is not None and spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
+    return _load_module(
+        "mcp_server/dual_franka_mcp_server/server.py",
+        "dual_franka_mcp_server_for_test",
+    )
+
+
+def _load_dual_franka_bridge_module():
+    try:
+        import fastapi  # noqa: F401
+        import uvicorn  # noqa: F401
+    except ImportError:
+        pytest.skip("fastapi/uvicorn is not installed")
+    return _load_module(
+        "mcp_server/dual_franka_mcp_server/dual_franka_bridge.py",
+        "dual_franka_bridge_for_test",
+    )
 
 
 def test_dual_franka_monitor_status_normalization():
@@ -68,3 +87,36 @@ def test_http_dataloader_accepts_wrapped_bridge_image_response():
     assert frame is not None
     assert frame.images["main"].data == "x" * 120
     assert frame.timestamp == 123.0
+
+
+def test_dual_franka_bridge_reads_local_camera_files(tmp_path):
+    bridge = _load_dual_franka_bridge_module()
+    bridge.image_dir = tmp_path
+    for filename in bridge.CAMERA_FILES.values():
+        (tmp_path / filename).write_bytes(b"fake-jpeg")
+
+    images, missing = bridge._read_camera_images()
+
+    assert missing == []
+    assert set(images) == {"cam_high", "cam_left_wrist", "cam_right_wrist"}
+
+
+def test_dual_franka_bridge_writes_subtask_atomically(tmp_path):
+    bridge = _load_dual_franka_bridge_module()
+    bridge.subtask_file = tmp_path / "subtask.txt"
+
+    bridge._write_subtask_file("pick up the cube")
+    bridge._write_subtask_file("place the cube")
+
+    assert bridge.subtask_file.read_text(encoding="utf-8") == "place the cube\n"
+
+
+def test_dual_franka_bridge_reads_monitor_result_json_and_text(tmp_path):
+    bridge = _load_dual_franka_bridge_module()
+    bridge.monitor_result_file = tmp_path / "monitor_result.txt"
+
+    bridge.monitor_result_file.write_text('{"status": "success", "score": 1.0}', encoding="utf-8")
+    assert bridge._read_monitor_result()["status"] == "success"
+
+    bridge.monitor_result_file.write_text("failed", encoding="utf-8")
+    assert bridge._read_monitor_result()["status"] == "failed"

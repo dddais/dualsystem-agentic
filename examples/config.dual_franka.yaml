@@ -1,4 +1,8 @@
 # dual_franka real-robot deployment config.
+# Robot side:
+#   python mcp_server/dual_franka_mcp_server/dual_franka_bridge.py --port 8767
+# It reads images from /tmp/img and monitor files from /tmp/subtask.txt +
+# /tmp/monitor_result.txt, while execution/control endpoints are placeholders.
 # Image acquisition, monitor, execution, and extra robot utilities all go through HTTP.
 vlm:
   provider: openai_compatible

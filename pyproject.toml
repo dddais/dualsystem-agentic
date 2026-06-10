@@ -26,6 +26,8 @@ dependencies = [
 mcp = [
     "mcp",
     "httpx",
+    "fastapi",
+    "uvicorn",
 ]
 local-qwen = [
     "torch",
