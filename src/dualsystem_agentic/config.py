@@ -53,6 +53,8 @@ class MCPConfig:
 @dataclass
 class LoopConfig:
     max_steps: int = 20
+    monitor_poll_interval_s: float = 1.0
+    max_monitor_polls: int = 300
     monitor_tool_name: str = "monitor"
     execute_tool_name: str = "execute"
     fetch_env_tool_name: str = "fetch_env"

@@ -66,6 +66,7 @@ class ConsoleInteractionLayer:
         self.output_stream = output_stream or sys.stdout
         self.show_raw_json = show_raw_json
         self.prompt = prompt
+        self._displayed_subtasks: tuple[str, ...] = ()
 
     def read_task(self) -> str | None:
         while True:
@@ -91,9 +92,14 @@ class ConsoleInteractionLayer:
         self._write("Online agent ready. Enter a long-horizon task, or /quit to exit.")
 
     def show_task_started(self, task: str, session_id: str) -> None:
+        self._displayed_subtasks = ()
         self._write(f"[{session_id}] task started: {task}")
 
     def show_step(self, result: AgenticStepResult) -> None:
+        plan_update = _format_plan_update(result, self._displayed_subtasks)
+        if plan_update is not None:
+            text, self._displayed_subtasks = plan_update
+            self._write(text)
         if self.show_raw_json:
             self._write(json.dumps(result.to_dict(), ensure_ascii=False))
             return
@@ -101,9 +107,10 @@ class ConsoleInteractionLayer:
         status = result.monitor_status.value if result.monitor_status else "-"
         complete = " complete" if result.task_complete else ""
         subtask = result.current_subtask or "-"
+        vlm = "called" if result.vlm_called else "skipped"
         self._write(
             f"step {result.step_index}: subtask={subtask!r} "
-            f"tools=[{tools}] monitor={status}{complete}"
+            f"tools=[{tools}] monitor={status} vlm={vlm}{complete}"
         )
 
     def show_task_finished(self, summary: OnlineTaskSummary) -> None:
@@ -146,6 +153,7 @@ class TuiInteractionLayer:
         self._curses = None
         self._fallback: ConsoleInteractionLayer | None = None
         self._lines: list[str] = []
+        self._displayed_subtasks: tuple[str, ...] = ()
 
     def read_task(self) -> str | None:
         if not self._ensure_started():
@@ -169,6 +177,7 @@ class TuiInteractionLayer:
         self._append("Online agent ready. Enter a long-horizon task, or /quit to exit.")
 
     def show_task_started(self, task: str, session_id: str) -> None:
+        self._displayed_subtasks = ()
         self._show_or_fallback("show_task_started", task, session_id)
 
     def show_step(self, result: AgenticStepResult) -> None:
@@ -177,6 +186,10 @@ class TuiInteractionLayer:
             return
         if not self._ensure_started():
             return
+        plan_update = _format_plan_update(result, self._displayed_subtasks)
+        if plan_update is not None:
+            text, self._displayed_subtasks = plan_update
+            self._append(text)
         if self.show_raw_json:
             self._append(json.dumps(result.to_dict(), ensure_ascii=False))
             return
@@ -185,9 +198,10 @@ class TuiInteractionLayer:
         complete = " complete" if result.task_complete else ""
         parse = f" parse_error={result.parse_error}" if result.parse_error else ""
         subtask = result.current_subtask or "-"
+        vlm = "called" if result.vlm_called else "skipped"
         self._append(
             f"step {result.step_index}: subtask={subtask!r} "
-            f"tools=[{tools}] monitor={status}{complete}{parse}"
+            f"tools=[{tools}] monitor={status} vlm={vlm}{complete}{parse}"
         )
 
     def show_task_finished(self, summary: OnlineTaskSummary) -> None:
@@ -337,3 +351,21 @@ class TuiInteractionLayer:
             pass
         self._screen = None
         self._curses = None
+
+
+def _format_plan_update(
+    result: AgenticStepResult,
+    displayed_subtasks: tuple[str, ...],
+) -> tuple[str, tuple[str, ...]] | None:
+    subtasks = tuple(result.planner_output.subtasks)
+    if not subtasks or subtasks == displayed_subtasks:
+        return None
+    label = "subtask_list initialized:" if not displayed_subtasks else "subtask_list updated:"
+    current_index = result.subtask_index
+    if current_index is None:
+        current_index = result.planner_output.subtask_index
+    lines = [label]
+    for index, subtask in enumerate(subtasks):
+        marker = " <- current" if index == current_index else ""
+        lines.append(f"  {index}. {subtask}{marker}")
+    return "\n".join(lines), subtasks

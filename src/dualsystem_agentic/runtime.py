@@ -20,12 +20,16 @@ class OnlineAgentRuntime:
         interaction: InteractionLayer,
         logger: RunLogger | None = None,
         max_steps: int = 20,
+        monitor_poll_interval_s: float = 1.0,
+        max_monitor_polls: int = 300,
         metadata: JsonDict | None = None,
     ) -> None:
         self.loop = loop
         self.interaction = interaction
         self.logger = logger or NullRunLogger()
         self.max_steps = max_steps
+        self.monitor_poll_interval_s = max(0.0, monitor_poll_interval_s)
+        self.max_monitor_polls = max_monitor_polls
         self.metadata = metadata or {}
         self._session_count = 0
 
@@ -51,16 +55,32 @@ class OnlineAgentRuntime:
         state = AgenticSessionState(task=task)
         results: list[AgenticStepResult] = []
         stop_reason = "max_steps"
+        vlm_steps = 0
+        monitor_polls = 0
         self.logger.start_session(task, session_id)
         self.interaction.show_task_started(task, session_id)
         try:
-            for _ in range(self.max_steps):
+            while vlm_steps < self.max_steps or state.awaiting_monitor:
+                if state.awaiting_monitor and self.monitor_poll_interval_s > 0:
+                    time.sleep(self.monitor_poll_interval_s)
                 result, state = self.loop.step(task, state, metadata=self.metadata)
                 results.append(result)
                 self.logger.log_step(session_id, result)
                 self.interaction.show_step(result)
+                if result.vlm_called:
+                    vlm_steps += 1
+                    monitor_polls = 0
+                else:
+                    monitor_polls += 1
                 if result.task_complete:
                     stop_reason = "task_complete"
+                    break
+                if (
+                    state.awaiting_monitor
+                    and self.max_monitor_polls > 0
+                    and monitor_polls >= self.max_monitor_polls
+                ):
+                    stop_reason = "max_monitor_polls"
                     break
             summary = _summary_from(
                 task=task,
@@ -139,4 +159,3 @@ def _summary_from(
         monitor_status=monitor_status,
         monitor_error=state.monitor_error,
     )
-

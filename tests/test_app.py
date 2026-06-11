@@ -34,6 +34,8 @@ def test_build_online_robot_app_wires_components_from_config():
     assert type(app.loop.executor).__name__ == "NoopExecutorClient"
     assert app.dataloader is None
     assert app.runtime.max_steps == 2
+    assert app.runtime.monitor_poll_interval_s == 1.0
+    assert app.runtime.max_monitor_polls == 300
 
 
 def test_built_online_robot_app_can_run_one_scripted_task():

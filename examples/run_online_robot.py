@@ -117,6 +117,8 @@ def main(argv: list[str] | None = None) -> int:
         print("interaction:", type(runtime.interaction).__name__)
         print("logger:", type(runtime.logger).__name__)
         print("max_steps:", runtime.max_steps)
+        print("monitor_poll_interval_s:", runtime.monitor_poll_interval_s)
+        print("max_monitor_polls:", runtime.max_monitor_polls)
 
     app.serve_forever()
     return 0

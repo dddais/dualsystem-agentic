@@ -6,9 +6,9 @@
 # Image acquisition, monitor, execution, and extra robot utilities all go through HTTP.
 vlm:
   provider: openai_compatible
-  model: gpt-4o
-  base_url: ${OPENAI_BASE_URL}
-  api_key: ${OPENAI_API_KEY}
+  model: gemini-3-pro-preview
+  base_url: https://api.vectorengine.ai/v1
+  api_key: sk-beOMdW9cnMdLsxG47X4kocPkB6BssOSQiwPIzqfaLEjgukD4
   timeout: 60.0
   sampling_params:
     temperature: 0.2
@@ -38,6 +38,10 @@ mcp:
 
 loop:
   max_steps: 20
+  # VLM reasoning steps are limited by max_steps; monitor-only polls do not
+  # consume that budget. Adjust these two values for real robot timing.
+  monitor_poll_interval_s: 1.0
+  max_monitor_polls: 300
 
 dataloader:
   provider: http

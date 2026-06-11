@@ -202,6 +202,8 @@ class AgenticSessionState:
     subtask_index: int | None = None
     monitor_status: MonitorStatus | None = None
     monitor_error: str | None = None
+    awaiting_monitor: bool = False
+    monitor_namespace: str | None = None
     last_tool_results: list[ToolResult] = field(default_factory=list)
     environment: JsonDict = field(default_factory=dict)
     step_index: int = 0
@@ -218,6 +220,8 @@ class AgenticSessionState:
                 "subtask_index": self.subtask_index,
                 "monitor_status": self.monitor_status,
                 "monitor_error": self.monitor_error,
+                "awaiting_monitor": self.awaiting_monitor,
+                "monitor_namespace": self.monitor_namespace,
                 "last_tool_results": self.last_tool_results,
                 "environment": self.environment,
                 "step_index": self.step_index,
@@ -236,6 +240,8 @@ class AgenticSessionState:
             subtask_index=_optional_int(data.get("subtask_index")),
             monitor_status=normalize_monitor_status(monitor_status) if monitor_status else None,
             monitor_error=_optional_str(data.get("monitor_error")),
+            awaiting_monitor=bool(data.get("awaiting_monitor", False)),
+            monitor_namespace=_optional_str(data.get("monitor_namespace")),
             last_tool_results=[
                 _tool_result_from_dict(item)
                 for item in data.get("last_tool_results", [])
@@ -296,6 +302,7 @@ class AgenticStepResult:
     step_index: int
     planner_input: AgenticPlannerInput
     planner_output: AgenticPlannerOutput
+    vlm_called: bool = True
     tool_results: list[ToolResult] = field(default_factory=list)
     executor_output: ExecutorOutput | None = None
     current_subtask: str | None = None

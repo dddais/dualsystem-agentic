@@ -8,6 +8,7 @@ import logging
 from dualsystem_agentic.core.parser import parse_agentic_planner_output
 from dualsystem_agentic.core.types import (
     AgenticPlannerInput,
+    AgenticPlannerOutput,
     AgenticSessionState,
     AgenticStepResult,
     ExecutorInput,
@@ -88,6 +89,9 @@ class AgenticRobotLoop:
             metadata=metadata or {},
         )
 
+        if state.awaiting_monitor and state.current_subtask:
+            return self._poll_monitor(planner_input, state)
+
         raw_output = self.planner.generate(planner_input)
         planner_output = parse_agentic_planner_output(raw_output)
 
@@ -97,6 +101,7 @@ class AgenticRobotLoop:
             if planner_output.subtask_index is not None:
                 state.subtask_index = planner_output.subtask_index
             state.last_tool_results = []
+            state.awaiting_monitor = False
             result = AgenticStepResult(
                 task=state.task,
                 step_index=state.step_index,
@@ -148,9 +153,11 @@ class AgenticRobotLoop:
         parse_error = planner_output.parse_error
         monitor_status = state.monitor_status
         monitor_error = state.monitor_error
+        saw_monitor_feedback = False
         tool_calls_by_id = _tool_calls_by_id(planner_output.tool_calls)
         for tool_result in tool_results:
             if self._is_monitor_result(tool_result):
+                saw_monitor_feedback = True
                 try:
                     tool_call = tool_calls_by_id.get(tool_result.call_id or "") or _first_tool_call(
                         planner_output.tool_calls,
@@ -208,6 +215,22 @@ class AgenticRobotLoop:
                 state.monitor_status = MonitorStatus.FAILED
                 state.monitor_error = executor_output.error or "executor failed"
 
+        if requested_mcp_execute and parse_ok and current_subtask and not planner_output.task_complete:
+            state.monitor_namespace = _monitor_namespace(tool_results, state.monitor_namespace)
+            if not saw_monitor_feedback:
+                state.monitor_status = MonitorStatus.RUNNING
+                state.monitor_error = None
+                state.awaiting_monitor = True
+            else:
+                state.awaiting_monitor = (
+                    state.monitor_status is not MonitorStatus.SUCCESS
+                    and state.monitor_status is not MonitorStatus.FAILED
+                )
+                if state.awaiting_monitor and state.monitor_status is None:
+                    state.monitor_status = MonitorStatus.RUNNING
+        elif state.monitor_status in {MonitorStatus.SUCCESS, MonitorStatus.FAILED}:
+            state.awaiting_monitor = False
+
         result = AgenticStepResult(
             task=state.task,
             step_index=state.step_index,
@@ -220,6 +243,84 @@ class AgenticRobotLoop:
             monitor_status=state.monitor_status,
             monitor_error=state.monitor_error,
             task_complete=planner_output.task_complete,
+            parse_ok=parse_ok,
+            parse_error=parse_error,
+        )
+
+        state.step_index += 1
+        return result, state
+
+    def _poll_monitor(
+        self,
+        planner_input: AgenticPlannerInput,
+        state: AgenticSessionState,
+    ) -> tuple[AgenticStepResult, AgenticSessionState]:
+        tool_call = ToolCall(
+            name=self.monitor_tool_name,
+            arguments=_monitor_arguments(state),
+            namespace=state.monitor_namespace,
+        )
+        tool_result = self.tool_client.call_tool(
+            tool_call.name,
+            tool_call.arguments,
+            namespace=tool_call.namespace,
+            call_id=tool_call.call_id,
+        )
+        tool_results = [tool_result]
+        planner_output = AgenticPlannerOutput(
+            raw_output="[system] monitor poll without VLM",
+            tool_calls=[tool_call],
+            current_subtask=state.current_subtask,
+            subtask_index=state.subtask_index,
+            subtasks=[],
+            should_execute=False,
+            task_complete=False,
+        )
+
+        parse_ok = True
+        parse_error = None
+        monitor_status = state.monitor_status
+        monitor_error = state.monitor_error
+        if self._is_monitor_result(tool_result):
+            try:
+                _validate_monitor_identity(
+                    tool_call=tool_call,
+                    result=tool_result,
+                    current_subtask=state.current_subtask,
+                    subtask_index=state.subtask_index,
+                )
+                monitor_status = normalize_monitor_status(str(tool_result.data.get("status") or ""))
+                monitor_error = _optional_str(tool_result.data.get("error"))
+            except (TypeError, ValueError) as exc:
+                parse_ok = False
+                parse_error = str(exc)
+                monitor_status = MonitorStatus.FAILED
+                monitor_error = str(exc)
+        else:
+            parse_ok = False
+            parse_error = tool_result.error or "monitor poll did not return a valid monitor status"
+            monitor_status = MonitorStatus.FAILED
+            monitor_error = parse_error
+
+        state.last_tool_results = tool_results
+        state.environment = self._merge_environment(state.environment, tool_results)
+        state.monitor_status = monitor_status
+        state.monitor_error = monitor_error
+        state.monitor_namespace = tool_result.namespace or state.monitor_namespace
+        state.awaiting_monitor = parse_ok and monitor_status is MonitorStatus.RUNNING
+
+        result = AgenticStepResult(
+            task=state.task,
+            step_index=state.step_index,
+            planner_input=planner_input,
+            planner_output=planner_output,
+            vlm_called=False,
+            tool_results=tool_results,
+            current_subtask=state.current_subtask,
+            subtask_index=state.subtask_index,
+            monitor_status=state.monitor_status,
+            monitor_error=state.monitor_error,
+            task_complete=False,
             parse_ok=parse_ok,
             parse_error=parse_error,
         )
@@ -340,6 +441,22 @@ def _first_tool_call(tool_calls: list[ToolCall], name: str) -> ToolCall | None:
         if tool_call.name == name:
             return tool_call
     return None
+
+
+def _monitor_arguments(state: AgenticSessionState) -> JsonDict:
+    arguments: JsonDict = {}
+    if state.current_subtask is not None:
+        arguments["subtask"] = state.current_subtask
+    if state.subtask_index is not None:
+        arguments["subtask_index"] = state.subtask_index
+    return arguments
+
+
+def _monitor_namespace(tool_results: list[ToolResult], fallback: str | None) -> str | None:
+    for tool_result in tool_results:
+        if tool_result.namespace:
+            return tool_result.namespace
+    return fallback
 
 
 def _optional_str(value: object | None) -> str | None:

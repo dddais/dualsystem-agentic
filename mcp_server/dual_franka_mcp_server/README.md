@@ -15,7 +15,13 @@ into HTTP:
 - images from `/tmp/img/base_0_rgb.jpg`, `/tmp/img/left_wrist_0_rgb.jpg`,
   `/tmp/img/right_wrist_0_rgb.jpg`
 - monitor target written to `/tmp/subtask.txt`
-- monitor result read from `/tmp/monitor_result.txt`
+- monitor result read from `/tmp/monitor_result.txt`; the recommended format is
+  a single word: `running`, `success`, or `failed`
+- `execute` automatically triggers `monitor` for the same subtask, so an
+  `execute` tool call also updates `/tmp/subtask.txt`
+- when a new subtask starts, the bridge resets `/tmp/monitor_result.txt` to
+  `running` for that subtask so stale terminal results are not reused
+- JSON monitor results are still accepted for compatibility, but are optional
 - execution/control endpoints currently log placeholders
 
 ## Tools
@@ -24,7 +30,7 @@ into HTTP:
 |------|--------------|-----------|
 | `fetch_env` | `GET /environment` | scene/robot state |
 | `monitor` | `POST /task/monitor` | returns `running` / `success` / `failed` |
-| `execute` | `POST /task/execute` | starts a subtask and returns `executed: true` |
+| `execute` | `POST /task/execute` + `POST /task/monitor` | starts a subtask, writes monitor target, and returns `executed: true` |
 | `stop_task` | `POST /task/stop` | stop |
 | `reset_task` | `POST /task/reset` | reset |
 | `emergency_stop` | `POST /task/emergency_stop` | emergency stop |

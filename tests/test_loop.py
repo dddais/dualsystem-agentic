@@ -134,10 +134,153 @@ def test_mcp_execute_skips_downstream_executor():
     executor = RecordingExecutor()
     loop = AgenticRobotLoop(planner, _tool_client(), executor)
 
-    result, _ = loop.step("task")
+    result, state = loop.step("task")
 
     assert any(tr.tool_name == "execute" for tr in result.tool_results)
     assert executor.calls == []
+    assert state.awaiting_monitor is True
+
+
+def test_awaiting_monitor_polls_without_calling_planner_until_success():
+    client = FakeMCPToolClient()
+    monitor_statuses = iter(["running", "success"])
+    monitor_calls = []
+    planner_inputs = []
+    client.register(
+        "monitor",
+        lambda args: (
+            monitor_calls.append(dict(args))
+            or {"status": next(monitor_statuses), "subtask": args.get("subtask")}
+        ),
+        namespace="demo_robot",
+    )
+    client.register(
+        "execute",
+        lambda args: {"executed": True, "status": "running", "subtask": args.get("subtask")},
+        namespace="demo_robot",
+    )
+
+    def planner_fn(planner_input):
+        planner_inputs.append(planner_input)
+        if len(planner_inputs) == 1:
+            return json.dumps(
+                {
+                    "tool_calls": [
+                        {
+                            "namespace": "demo_robot",
+                            "name": "execute",
+                            "arguments": {"subtask": "pick cup"},
+                        }
+                    ],
+                    "current_subtask": "pick cup",
+                }
+            )
+        return json.dumps({"task_complete": True})
+
+    loop = AgenticRobotLoop(CallablePlanner(planner_fn), client, RecordingExecutor())
+
+    result0, state = loop.step("task")
+    assert result0.vlm_called is True
+    assert state.awaiting_monitor is True
+    assert state.monitor_status is MonitorStatus.RUNNING
+
+    result1, state = loop.step("task", state)
+    assert result1.vlm_called is False
+    assert result1.tool_results[0].tool_name == "monitor"
+    assert result1.monitor_status is MonitorStatus.RUNNING
+    assert state.awaiting_monitor is True
+    assert len(planner_inputs) == 1
+
+    result2, state = loop.step("task", state)
+    assert result2.vlm_called is False
+    assert result2.monitor_status is MonitorStatus.SUCCESS
+    assert state.awaiting_monitor is False
+    assert len(planner_inputs) == 1
+
+    result3, state = loop.step("task", state)
+    assert result3.vlm_called is True
+    assert result3.task_complete is True
+    assert len(planner_inputs) == 2
+    assert planner_inputs[-1].monitor_status is MonitorStatus.SUCCESS
+    assert monitor_calls == [{"subtask": "pick cup"}, {"subtask": "pick cup"}]
+
+
+def test_awaiting_monitor_failure_returns_control_to_planner():
+    client = FakeMCPToolClient()
+    planner_inputs = []
+    client.register(
+        "monitor",
+        lambda args: {"status": "failed", "subtask": args.get("subtask"), "error": "blocked"},
+        namespace="demo_robot",
+    )
+    client.register(
+        "execute",
+        lambda args: {"executed": True, "status": "running", "subtask": args.get("subtask")},
+        namespace="demo_robot",
+    )
+
+    def planner_fn(planner_input):
+        planner_inputs.append(planner_input)
+        if len(planner_inputs) == 1:
+            return json.dumps(
+                {
+                    "tool_calls": [
+                        {
+                            "namespace": "demo_robot",
+                            "name": "execute",
+                            "arguments": {"subtask": "pick cup"},
+                        }
+                    ],
+                    "current_subtask": "pick cup",
+                }
+            )
+        return json.dumps({"current_subtask": "retry pick cup"})
+
+    loop = AgenticRobotLoop(CallablePlanner(planner_fn), client, RecordingExecutor())
+
+    _, state = loop.step("task")
+    result1, state = loop.step("task", state)
+    assert result1.vlm_called is False
+    assert result1.monitor_status is MonitorStatus.FAILED
+    assert result1.monitor_error == "blocked"
+    assert state.awaiting_monitor is False
+
+    result2, _ = loop.step("task", state)
+    assert result2.vlm_called is True
+    assert result2.current_subtask == "retry pick cup"
+    assert planner_inputs[-1].monitor_status is MonitorStatus.FAILED
+    assert planner_inputs[-1].monitor_error == "blocked"
+
+
+def test_new_execute_without_monitor_feedback_resets_previous_success():
+    client = FakeMCPToolClient()
+    client.register("execute", lambda args: {"executed": True}, namespace="demo_robot")
+    planner = _planner(
+        [
+            json.dumps(
+                {
+                    "tool_calls": [
+                        {"namespace": "demo_robot", "name": "execute", "arguments": {"subtask": "place cup"}}
+                    ],
+                    "current_subtask": "place cup",
+                }
+            )
+        ]
+    )
+    state = AgenticSessionState(
+        task="task",
+        current_subtask="pick cup",
+        monitor_status=MonitorStatus.SUCCESS,
+        awaiting_monitor=False,
+    )
+    loop = AgenticRobotLoop(planner, client, RecordingExecutor())
+
+    result, state = loop.step("task", state)
+
+    assert result.current_subtask == "place cup"
+    assert result.monitor_status is MonitorStatus.RUNNING
+    assert state.awaiting_monitor is True
+    assert state.monitor_error is None
 
 
 def test_nonstandard_tool_with_status_is_treated_as_monitor_feedback():

@@ -108,7 +108,9 @@ names, map only those roles:
 
 ```yaml
 loop:
-  max_steps: 20
+  max_steps: 20              # VLM reasoning steps, not monitor-only polls
+  monitor_poll_interval_s: 1.0
+  max_monitor_polls: 300
   tool_roles:
     fetch_env: observe_scene
     monitor: check_status
@@ -267,11 +269,13 @@ The TUI uses Python's standard `curses` module and automatically falls back to t
 console interaction when stdin/stdout are not TTYs.
 
 Optional run logging is configured under `logging`. When enabled, each process run
-creates a run directory with `events.jsonl`; each user task is a session. Step
-events include planner input, rendered prompt, raw VLM output, parsed output, tool
-results, executor output, monitor status, and the stop reason. Images are saved as
-files under the session/step directory, while JSONL stores only path/hash/size
-references.
+creates a run directory with `events.jsonl`, a readable `events.log`, and a
+prompt-focused `prompt.log`; each user task is a session. The JSONL file keeps
+the full structured event payload for scripts, `events.log` summarizes sessions,
+steps, subtasks, image paths, tool calls, tool results, executor output, parse
+errors, and stop reasons, and `prompt.log` stores the full rendered planner
+prompt for each step in readable blocks. Images are saved as files under the
+session/step directory, while JSONL stores only path/hash/size references.
 
 ```yaml
 logging:

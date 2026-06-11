@@ -92,6 +92,24 @@ def test_jsonl_logger_records_step_without_embedding_base64_images(tmp_path):
     saved_path = tmp_path / "test-run" / image_ref["path"]
     assert saved_path.read_bytes() == raw_image
 
+    human_log = (tmp_path / "test-run" / "events.log").read_text(encoding="utf-8")
+    assert "SESSION STARTED" in human_log
+    assert "STEP session=session_0001 step=0 vlm=called parse=ok complete=False" in human_log
+    assert "task: tidy the desk" in human_log
+    assert "current: clear cups" in human_log
+    assert "planner_prompt:" in human_log
+    assert "tool_results:" in human_log
+    assert "- demo___monitor: ok" in human_log
+    assert "main:" in human_log
+    assert image_ref["path"] in human_log
+
+    prompt_log = (tmp_path / "test-run" / "prompt.log").read_text(encoding="utf-8")
+    assert "PROMPT session=session_0001 step=0" in prompt_log
+    assert "task: tidy the desk" in prompt_log
+    assert "prompt_chars:" in prompt_log
+    assert "You are the high-level planner" in prompt_log
+    assert image_payload not in prompt_log
+
 
 def test_jsonl_logger_omits_image_payload_when_image_saving_disabled(tmp_path):
     image_payload = base64.b64encode(b"image bytes").decode("ascii")

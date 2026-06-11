@@ -140,6 +140,8 @@ def test_loop_tool_roles_are_optional_defaults():
     config = AppConfig.from_dict({"loop": {"max_steps": 7}})
 
     assert config.loop.max_steps == 7
+    assert config.loop.monitor_poll_interval_s == 1.0
+    assert config.loop.max_monitor_polls == 300
     assert config.loop.monitor_tool_name == "monitor"
     assert config.loop.execute_tool_name == "execute"
     assert config.loop.fetch_env_tool_name == "fetch_env"

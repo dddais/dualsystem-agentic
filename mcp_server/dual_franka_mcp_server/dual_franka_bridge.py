@@ -138,13 +138,22 @@ async def task_execute(body: dict):
     subtask = body.get("subtask") or body.get("prompt") or body.get("instruction")
     if not subtask:
         return _fail("missing subtask")
+    monitor_reset = _prepare_monitor_target(str(subtask), force_reset=True)
     _last_execute_request = {
         "subtask": str(subtask),
         "request": body,
         "timestamp": time.time(),
+        "monitor_result_reset": monitor_reset,
     }
     logger.info("[EXECUTE PLACEHOLDER] subtask=%r body=%s", subtask, json.dumps(body, ensure_ascii=False))
-    return _ok({"executed": True, "subtask": str(subtask), "placeholder": True})
+    return _ok(
+        {
+            "executed": True,
+            "subtask": str(subtask),
+            "placeholder": True,
+            "monitor_result_reset": monitor_reset,
+        }
+    )
 
 
 @app.post("/task/monitor")
@@ -157,8 +166,23 @@ async def task_monitor(body: dict):
     if not subtask:
         return _fail("missing subtask")
 
-    _write_subtask_file(str(subtask))
+    monitor_reset = _prepare_monitor_target(str(subtask))
     monitor_payload = _read_monitor_result()
+    stale_reason = _stale_monitor_result_reason(
+        monitor_payload,
+        subtask=str(subtask),
+        subtask_index=subtask_index,
+        task_id=task_id,
+    )
+    if stale_reason:
+        logger.info("ignoring stale monitor result for %r: %s", subtask, stale_reason)
+        monitor_payload = {
+            "status": "running",
+            "subtask": str(subtask),
+            "message": "ignored stale monitor result",
+            "stale_reason": stale_reason,
+            "ignored_monitor_result": monitor_payload,
+        }
     status = _derive_monitor_status(monitor_payload)
 
     _last_monitor_request = {
@@ -167,6 +191,7 @@ async def task_monitor(body: dict):
         "task_id": task_id,
         "timestamp": time.time(),
         "monitor_result": monitor_payload,
+        "monitor_result_reset": monitor_reset,
     }
     return _ok(
         {
@@ -175,6 +200,7 @@ async def task_monitor(body: dict):
             "subtask_index": subtask_index,
             "task_id": task_id,
             "monitor_result": monitor_payload,
+            "monitor_result_reset": monitor_reset,
         }
     )
 
@@ -264,22 +290,56 @@ def _read_camera_images(*, allow_missing: bool = False) -> tuple[dict[str, str],
     return images, missing
 
 
+def _prepare_monitor_target(subtask: str, *, force_reset: bool = False) -> bool:
+    previous_subtask = _read_subtask_file()
+    should_reset = force_reset or previous_subtask != subtask
+    _write_subtask_file(subtask)
+    if should_reset:
+        _reset_monitor_result()
+    return should_reset
+
+
+def _read_subtask_file() -> str | None:
+    if not subtask_file.exists():
+        return None
+    try:
+        with subtask_file.open("r", encoding="utf-8") as handle:
+            if HAS_FCNTL:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_SH)
+            try:
+                text = handle.read().strip()
+            finally:
+                if HAS_FCNTL:
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+    except OSError as exc:
+        logger.warning("failed to read subtask file %s: %s", subtask_file, exc)
+        return None
+    return text or None
+
+
 def _write_subtask_file(subtask: str) -> None:
-    subtask_file.parent.mkdir(parents=True, exist_ok=True)
-    lock_path = subtask_file.with_suffix(subtask_file.suffix + ".lock")
+    _atomic_write_text(subtask_file, f"{subtask}\n")
+
+
+def _reset_monitor_result() -> None:
+    _atomic_write_text(monitor_result_file, "running\n")
+
+
+def _atomic_write_text(path: Path, text: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    lock_path = path.with_suffix(path.suffix + ".lock")
     with _exclusive_lock(lock_path):
         fd, temp_name = tempfile.mkstemp(
-            prefix=f".{subtask_file.name}.",
-            dir=str(subtask_file.parent),
+            prefix=f".{path.name}.",
+            dir=str(path.parent),
             text=True,
         )
         try:
             with os.fdopen(fd, "w", encoding="utf-8") as handle:
-                handle.write(subtask)
-                handle.write("\n")
+                handle.write(text)
                 handle.flush()
                 os.fsync(handle.fileno())
-            os.replace(temp_name, subtask_file)
+            os.replace(temp_name, path)
         finally:
             if os.path.exists(temp_name):
                 os.unlink(temp_name)
@@ -330,13 +390,48 @@ def _derive_monitor_status(payload: dict[str, Any]) -> str:
     return "running"
 
 
+def _stale_monitor_result_reason(
+    payload: dict[str, Any],
+    *,
+    subtask: str,
+    subtask_index: Any,
+    task_id: Any,
+) -> str | None:
+    for key in ("subtask", "current_subtask"):
+        payload_subtask = _optional_text(payload.get(key))
+        if payload_subtask and payload_subtask != subtask:
+            return f"{key} mismatch: expected {subtask!r}, got {payload_subtask!r}"
+
+    payload_index = payload.get("subtask_index")
+    if payload_index is not None and subtask_index is not None:
+        try:
+            if int(payload_index) != int(subtask_index):
+                return f"subtask_index mismatch: expected {subtask_index}, got {payload_index}"
+        except (TypeError, ValueError):
+            return f"invalid subtask_index in monitor result: {payload_index!r}"
+
+    payload_task_id = _optional_text(payload.get("task_id"))
+    expected_task_id = _optional_text(task_id)
+    if payload_task_id and expected_task_id and payload_task_id != expected_task_id:
+        return f"task_id mismatch: expected {expected_task_id!r}, got {payload_task_id!r}"
+
+    return None
+
+
+def _optional_text(value: Any) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
+
+
 def _normalize_status(value: str) -> str | None:
     text = value.strip().lower()
     if text in {"running", "executing", "busy", "in_progress", "active", "started"}:
         return "running"
     if text in {"success", "succeeded", "done", "completed", "complete", "finished"}:
         return "success"
-    if text in {"failed", "failure", "error", "aborted", "cancelled", "canceled", "stopped"}:
+    if text in {"fail", "failed", "failure", "error", "aborted", "cancelled", "canceled", "stopped"}:
         return "failed"
     return None
 

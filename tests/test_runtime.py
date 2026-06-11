@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
+import base64
 import io
 import json
-import base64
 from collections.abc import Iterable
 
 from dualsystem_agentic import (
@@ -19,7 +19,7 @@ from dualsystem_agentic import (
     OnlineTaskSummary,
 )
 from dualsystem_agentic.io.dataloader import StaticDataLoader
-from dualsystem_agentic.core.types import ImageInput
+from dualsystem_agentic.core.types import AgenticPlannerInput, AgenticPlannerOutput, ImageInput
 from dualsystem_agentic.run_logger import JsonlRunLogger
 
 
@@ -104,6 +104,21 @@ def _loop(script_fn) -> AgenticRobotLoop:
     return AgenticRobotLoop(CallablePlanner(script_fn), _tool_client(), RecordingExecutor())
 
 
+def _step_with_plan(step_index: int, subtasks: list[str], subtask_index: int = 0) -> AgenticStepResult:
+    return AgenticStepResult(
+        task="clean the table",
+        step_index=step_index,
+        planner_input=AgenticPlannerInput(task="clean the table", step_index=step_index),
+        planner_output=AgenticPlannerOutput(
+            raw_output=json.dumps({"subtasks": subtasks, "subtask_index": subtask_index}),
+            subtasks=subtasks,
+            subtask_index=subtask_index,
+        ),
+        current_subtask=subtasks[subtask_index],
+        subtask_index=subtask_index,
+    )
+
+
 def test_online_runtime_resets_session_state_between_tasks():
     first_step_inputs: list[tuple[str, list[str], int]] = []
 
@@ -155,6 +170,93 @@ def test_online_runtime_marks_max_steps_and_keeps_waiting():
     assert len(interaction.steps) == 2
 
 
+def test_online_runtime_does_not_count_monitor_polls_against_max_steps():
+    client = FakeMCPToolClient()
+    monitor_statuses = iter(["running", "success"])
+    client.register(
+        "execute",
+        lambda args: {"executed": True, "status": "running", "subtask": args.get("subtask")},
+        namespace="demo",
+    )
+    client.register(
+        "monitor",
+        lambda args: {"status": next(monitor_statuses), "subtask": args.get("subtask")},
+        namespace="demo",
+    )
+    planner_calls = []
+
+    def planner(planner_input):
+        planner_calls.append(planner_input.step_index)
+        if len(planner_calls) == 1:
+            return json.dumps(
+                {
+                    "tool_calls": [
+                        {"namespace": "demo", "name": "execute", "arguments": {"subtask": "pick cup"}}
+                    ],
+                    "current_subtask": "pick cup",
+                }
+            )
+        return json.dumps({"task_complete": True})
+
+    interaction = ScriptedInteraction(["clean table", None])
+    runtime = OnlineAgentRuntime(
+        AgenticRobotLoop(CallablePlanner(planner), client, RecordingExecutor()),
+        interaction=interaction,
+        max_steps=1,
+        monitor_poll_interval_s=0,
+        max_monitor_polls=5,
+    )
+
+    summaries = runtime.serve_forever()
+
+    assert summaries[0].stop_reason == "max_steps"
+    assert [step.vlm_called for step in interaction.steps] == [True, False, False]
+    assert [step.monitor_status.value for step in interaction.steps if step.monitor_status] == [
+        "running",
+        "running",
+        "success",
+    ]
+    assert planner_calls == [0]
+
+
+def test_online_runtime_stops_after_max_monitor_polls():
+    client = FakeMCPToolClient()
+    client.register(
+        "execute",
+        lambda args: {"executed": True, "status": "running", "subtask": args.get("subtask")},
+        namespace="demo",
+    )
+    client.register(
+        "monitor",
+        lambda args: {"status": "running", "subtask": args.get("subtask")},
+        namespace="demo",
+    )
+
+    def planner(_planner_input):
+        return json.dumps(
+            {
+                "tool_calls": [
+                    {"namespace": "demo", "name": "execute", "arguments": {"subtask": "pick cup"}}
+                ],
+                "current_subtask": "pick cup",
+            }
+        )
+
+    interaction = ScriptedInteraction(["clean table", None])
+    runtime = OnlineAgentRuntime(
+        AgenticRobotLoop(CallablePlanner(planner), client, RecordingExecutor()),
+        interaction=interaction,
+        max_steps=1,
+        monitor_poll_interval_s=0,
+        max_monitor_polls=2,
+    )
+
+    summaries = runtime.serve_forever()
+
+    assert summaries[0].stop_reason == "max_monitor_polls"
+    assert [step.vlm_called for step in interaction.steps] == [True, False, False]
+
+
 def test_online_runtime_logs_and_reports_task_errors_then_continues():
     calls: list[str] = []
 
@@ -201,6 +303,25 @@ def test_console_interaction_reads_task_after_empty_lines():
     )
 
     assert interaction.read_task() == "move the cup"
+
+
+def test_console_interaction_prints_subtask_list_when_initialized_or_updated():
+    output = io.StringIO()
+    interaction = ConsoleInteractionLayer(
+        input_stream=io.StringIO(),
+        output_stream=output,
+    )
+
+    interaction.show_task_started("clean the table", "session_0001")
+    interaction.show_step(_step_with_plan(0, ["pick cup", "place cup"], 0))
+    interaction.show_step(_step_with_plan(1, ["pick cup", "place cup"], 0))
+    interaction.show_step(_step_with_plan(2, ["pick cup", "place cup", "wipe table"], 2))
+
+    text = output.getvalue()
+    assert text.count("subtask_list initialized:") == 1
+    assert text.count("subtask_list updated:") == 1
+    assert "  0. pick cup <- current" in text
+    assert "  2. wipe table <- current" in text
 
 
 def test_online_runtime_jsonl_logger_records_each_task_session(tmp_path):

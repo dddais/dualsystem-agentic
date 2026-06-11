@@ -9,3 +9,4 @@ dist/
 venv/
 
 examples/config.openai.yaml
+runs/

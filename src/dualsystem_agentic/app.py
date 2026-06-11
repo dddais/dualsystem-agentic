@@ -73,6 +73,8 @@ def build_online_robot_app(
         interaction=interaction or build_interaction(config.interaction),
         logger=logger or build_run_logger(config.logging),
         max_steps=max_steps if max_steps is not None else config.loop.max_steps,
+        monitor_poll_interval_s=config.loop.monitor_poll_interval_s,
+        max_monitor_polls=config.loop.max_monitor_polls,
     )
     return OnlineRobotApp(
         config=config,

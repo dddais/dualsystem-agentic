@@ -6,7 +6,7 @@ All robot operations are forwarded to HTTP endpoints:
 
 - ``fetch_env``  -> robot/environment state over HTTP
 - ``monitor``    -> subtask status over HTTP
-- ``execute``    -> subtask execution over HTTP
+- ``execute``    -> subtask execution, followed by an automatic monitor call
 - controls/other -> stop/reset/emergency/raw bridge calls over HTTP
 
 The VLM sees these tools through the project registry as
@@ -95,7 +95,10 @@ async def list_tools() -> list[types.Tool]:
         ),
         types.Tool(
             name="execute",
-            description="Execute one subtask on the dual-Franka HTTP bridge.",
+            description=(
+                "Execute one subtask on the dual-Franka HTTP bridge, then "
+                "automatically trigger monitor for the same subtask."
+            ),
             inputSchema={
                 "type": "object",
                 "required": ["subtask"],
@@ -213,18 +216,25 @@ async def _execute(client: httpx.AsyncClient, arguments: dict) -> dict:
     if not subtask:
         raise ValueError("execute requires a 'subtask'")
     request_payload = _build_execute_payload(arguments)
-    data = await _request(
+    execute_data = await _request(
         client,
         EXECUTE_METHOD,
         EXECUTE_PATH,
         json_data=request_payload if _method_has_body(EXECUTE_METHOD) else None,
         params=request_payload if not _method_has_body(EXECUTE_METHOD) else None,
     )
+    monitor_data = await _monitor(client, _build_execute_monitor_payload(arguments, str(subtask)))
+    monitor_status = str(monitor_data.get("status") or "running")
     return {
         "agentic_role": "execute",
-        "executed": bool(data.get("executed", True)),
+        "executed": bool(execute_data.get("executed", True)),
         "subtask": subtask,
-        "execute": data,
+        "subtask_index": monitor_data.get("subtask_index", arguments.get("subtask_index")),
+        "task_id": monitor_data.get("task_id", arguments.get("task_id")),
+        "status": monitor_status,
+        "monitor_status": monitor_status,
+        "execute": execute_data,
+        "monitor": monitor_data,
     }
 
 
@@ -249,6 +259,15 @@ def _build_execute_payload(arguments: dict) -> dict:
             payload[key] = value
     if isinstance(arguments.get("payload"), dict):
         payload.update(arguments["payload"])
+    return payload
+
+
+def _build_execute_monitor_payload(arguments: dict, subtask: str) -> dict:
+    payload = {"subtask": subtask}
+    for key in ("subtask_index", "task_id"):
+        value = arguments.get(key)
+        if value is not None:
+            payload[key] = value
     return payload
 
 
@@ -283,7 +302,7 @@ def _normalize_status_text(value: str) -> str | None:
         return "running"
     if text in {"success", "succeeded", "done", "completed", "complete", "finished", "idle_success"}:
         return "success"
-    if text in {"failed", "failure", "error", "aborted", "cancelled", "canceled", "stopped"}:
+    if text in {"fail", "failed", "failure", "error", "aborted", "cancelled", "canceled", "stopped"}:
         return "failed"
     return None
 
