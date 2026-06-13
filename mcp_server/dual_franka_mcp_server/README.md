@@ -28,7 +28,7 @@ into HTTP:
 
 | Tool | HTTP default | Loop role |
 |------|--------------|-----------|
-| `fetch_env` | `GET /environment` | scene/robot state |
+| `fetch_env` | hidden by default | structured scene state provider, only when configured |
 | `monitor` | `POST /task/monitor` | returns `running` / `success` / `failed` |
 | `execute` | `POST /task/execute` + `POST /task/monitor` | starts a subtask, writes monitor target, and returns `executed: true` |
 | `stop_task` | `POST /task/stop` | stop |
@@ -47,6 +47,7 @@ Set these in `examples/config.dual_franka.yaml` under the MCP server `env` block
 |----------|---------|
 | `DUAL_FRANKA_BRIDGE_URL` | `http://localhost:8767` |
 | `DUAL_FRANKA_FETCH_ENV_PATH` | `/environment` |
+| `DUAL_FRANKA_FETCH_ENV_HTTP` | unset / false |
 | `DUAL_FRANKA_MONITOR_PATH` | `/task/monitor` |
 | `DUAL_FRANKA_EXECUTE_PATH` | `/task/execute` |
 | `DUAL_FRANKA_STOP_PATH` | `/task/stop` |
@@ -63,6 +64,14 @@ dataloader:
   image_key: concatenated_image
   label: main
 ```
+
+`fetch_env` is intentionally hidden unless `DUAL_FRANKA_FETCH_ENV_HTTP=true` is
+set. This keeps local VLMs from repeatedly calling an empty scene-state tool, and
+keeps bridge bookkeeping such as camera file paths and last monitor requests out
+of the planner's structured scene state until a real scene-graph/environment
+provider is implemented. If `_fetch_env` is called directly while the HTTP
+provider is disabled, it returns `{"environment": {}}` as a compatibility
+placeholder.
 
 ## Local smoke test
 

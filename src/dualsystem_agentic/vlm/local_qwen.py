@@ -43,8 +43,31 @@ class LocalQwenVLMPlanner:
         with torch.no_grad():
             return self._generate_impl(planner_input)
 
+    def generate_text(
+        self,
+        prompt: str,
+        *,
+        images: dict[str, ImageInput] | None = None,
+        sampling_params: dict[str, Any] | None = None,
+    ) -> str:
+        import torch
+
+        self._ensure_loaded()
+        with torch.no_grad():
+            return self._generate_message(
+                self._build_text_message(prompt, images or {}),
+                sampling_params=sampling_params,
+            )
+
     def _generate_impl(self, planner_input: AgenticPlannerInput) -> str:
-        message = self._build_message(planner_input)
+        return self._generate_message(self._build_message(planner_input))
+
+    def _generate_message(
+        self,
+        message: dict[str, Any],
+        *,
+        sampling_params: dict[str, Any] | None = None,
+    ) -> str:
         text = self._processor.apply_chat_template(
             [message],
             tokenize=False,
@@ -60,7 +83,10 @@ class LocalQwenVLMPlanner:
         )
         inputs = inputs.to(self._model.device)
 
-        generated_ids = self._model.generate(**inputs, **self.default_sampling_params)
+        params = dict(self.default_sampling_params)
+        if sampling_params:
+            params.update(sampling_params)
+        generated_ids = self._model.generate(**inputs, **params)
         input_ids = inputs.input_ids[0]
         output_ids = generated_ids[0][len(input_ids) :].tolist()
         if self.model_family == "qwen3":
@@ -102,10 +128,20 @@ class LocalQwenVLMPlanner:
         self._process_vision_info = process_vision_info
 
     def _build_message(self, planner_input: AgenticPlannerInput) -> dict[str, Any]:
+        return self._build_text_message(
+            build_agentic_prompt(planner_input),
+            planner_input.images,
+        )
+
+    def _build_text_message(
+        self,
+        prompt: str,
+        images: dict[str, ImageInput],
+    ) -> dict[str, Any]:
         content: list[dict[str, Any]] = []
-        for image in planner_input.images.values():
+        for image in images.values():
             content.append({"type": "image", "image": _to_pil(image)})
-        content.append({"type": "text", "text": build_agentic_prompt(planner_input)})
+        content.append({"type": "text", "text": prompt})
         return {"role": "user", "content": content}
 
     def _strip_thinking(self, output_ids: list[int]) -> str:

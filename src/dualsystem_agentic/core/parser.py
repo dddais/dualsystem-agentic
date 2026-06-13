@@ -14,6 +14,10 @@ from dualsystem_agentic.core.types import (
     ensure_jsonable,
 )
 
+_PASSIVE_DECISIONS = {"plan", "observe", "wait", "cancel", "complete", "ask_user", "noop"}
+_VALID_DECISIONS = _PASSIVE_DECISIONS | {"execute", "replan"}
+_STANDALONE_DECISIONS = {"observe", "wait", "cancel", "ask_user", "noop"}
+
 
 def parse_agentic_planner_output(text: str) -> AgenticPlannerOutput:
     """Parse a planner response into structured tool calls and subtask data."""
@@ -29,14 +33,20 @@ def parse_agentic_planner_output(text: str) -> AgenticPlannerOutput:
         )
 
     try:
+        decision = _optional_decision(data.get("decision"))
         tool_calls = _parse_tool_calls(data.get("tool_calls") or data.get("tools") or [])
         current_subtask = _optional_text(data.get("current_subtask") or data.get("subtask"))
         subtasks = _parse_subtasks(data.get("subtasks") or data.get("plan") or [])
         subtask_index = _optional_int(
             data.get("subtask_index") if data.get("subtask_index") is not None else data.get("subtask_id")
         )
-        should_execute = bool(data.get("should_execute", True))
-        task_complete = bool(data.get("task_complete", data.get("complete", False)))
+        should_execute_explicit = "should_execute" in data
+        should_execute = (
+            bool(data.get("should_execute", True))
+            if should_execute_explicit
+            else _default_should_execute(decision)
+        )
+        task_complete = bool(data.get("task_complete", data.get("complete", decision == "complete")))
     except (TypeError, ValueError) as exc:
         return AgenticPlannerOutput(
             raw_output=raw_output,
@@ -57,9 +67,16 @@ def parse_agentic_planner_output(text: str) -> AgenticPlannerOutput:
             subtasks=subtasks,
             should_execute=False,
             task_complete=True,
+            decision=decision,
         )
 
-    if not current_subtask and not tool_calls and subtask_index is None and not subtasks:
+    if (
+        not current_subtask
+        and not tool_calls
+        and subtask_index is None
+        and not subtasks
+        and decision not in _STANDALONE_DECISIONS
+    ):
         return AgenticPlannerOutput(
             raw_output=raw_output,
             subtasks=subtasks,
@@ -68,6 +85,7 @@ def parse_agentic_planner_output(text: str) -> AgenticPlannerOutput:
             task_complete=task_complete,
             parse_ok=False,
             parse_error="planner output must include a subtask plan, a subtask index, a current subtask, or a tool call",
+            decision=decision,
         )
 
     return AgenticPlannerOutput(
@@ -77,7 +95,9 @@ def parse_agentic_planner_output(text: str) -> AgenticPlannerOutput:
         subtask_index=subtask_index,
         subtasks=subtasks,
         should_execute=should_execute,
+        should_execute_explicit=should_execute_explicit,
         task_complete=task_complete,
+        decision=decision,
     )
 
 
@@ -158,6 +178,21 @@ def _optional_text(value: Any) -> str | None:
         return None
     text = str(value).strip()
     return text or None
+
+
+def _optional_decision(value: Any | None) -> str | None:
+    decision = _optional_text(value)
+    if decision is None:
+        return None
+    decision = decision.lower()
+    if decision not in _VALID_DECISIONS:
+        allowed = ", ".join(sorted(_VALID_DECISIONS))
+        raise ValueError(f"Unsupported planner decision: {decision!r}. Expected one of: {allowed}")
+    return decision
+
+
+def _default_should_execute(decision: str | None) -> bool:
+    return decision not in _PASSIVE_DECISIONS
 
 
 def _optional_int(value: Any) -> int | None:

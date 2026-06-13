@@ -18,6 +18,18 @@ class MonitorStatus(str, Enum):
     FAILED = "failed"
 
 
+class AgenticPhase(str, Enum):
+    """High-level controller phases for the agentic loop."""
+
+    INIT = "init"
+    READY = "ready"
+    REASON = "reason"
+    ACT = "act"
+    RESPONSE = "response"
+    DONE = "done"
+    ERROR = "error"
+
+
 def normalize_monitor_status(value: str | MonitorStatus) -> MonitorStatus:
     """Return a validated monitor status."""
     if isinstance(value, MonitorStatus):
@@ -29,6 +41,20 @@ def normalize_monitor_status(value: str | MonitorStatus) -> MonitorStatus:
         allowed = ", ".join(status.value for status in MonitorStatus)
         raise ValueError(
             f"Unsupported monitor status: {value!r}. Expected one of: {allowed}"
+        ) from exc
+
+
+def normalize_agentic_phase(value: str | AgenticPhase) -> AgenticPhase:
+    """Return a validated agentic phase."""
+    if isinstance(value, AgenticPhase):
+        return value
+    normalized = str(value).strip().lower()
+    try:
+        return AgenticPhase(normalized)
+    except ValueError as exc:
+        allowed = ", ".join(phase.value for phase in AgenticPhase)
+        raise ValueError(
+            f"Unsupported agentic phase: {value!r}. Expected one of: {allowed}"
         ) from exc
 
 
@@ -154,16 +180,56 @@ class ToolResult:
 
 
 @dataclass
+class ActiveExecution:
+    """The subtask currently being executed or most recently monitored."""
+
+    subtask: str
+    subtask_index: int | None = None
+    execution_id: str | None = None
+    monitor_id: str | None = None
+    status: str = MonitorStatus.RUNNING.value
+    error: str | None = None
+    namespace: str | None = None
+    started_at: float | None = None
+    updated_at: float | None = None
+
+    @property
+    def running(self) -> bool:
+        return self.status == MonitorStatus.RUNNING.value
+
+    def to_dict(self) -> JsonDict:
+        return ensure_jsonable(self)  # type: ignore[return-value]
+
+
+@dataclass(frozen=True)
+class AgenticEvent:
+    """Runtime, tool, or monitor event that can trigger another reason step."""
+
+    event_type: str
+    data: JsonDict = field(default_factory=dict)
+    source: str | None = None
+    message: str | None = None
+    created_at: float | None = None
+
+    def to_dict(self) -> JsonDict:
+        return ensure_jsonable(self)  # type: ignore[return-value]
+
+
+@dataclass
 class AgenticPlannerInput:
     """Structured context passed to a high-level planner."""
 
     task: str
+    phase: AgenticPhase = AgenticPhase.READY
     step_index: int = 0
     current_subtask: str | None = None
     subtask_index: int | None = None
     subtasks: list[str] = field(default_factory=list)
     monitor_status: MonitorStatus | None = None
     monitor_error: str | None = None
+    active_execution: ActiveExecution | None = None
+    events: list[AgenticEvent] = field(default_factory=list)
+    reason_requested: bool = False
     tool_results: list[ToolResult] = field(default_factory=list)
     environment: JsonDict = field(default_factory=dict)
     available_tools: list[JsonDict] = field(default_factory=list)
@@ -184,9 +250,11 @@ class AgenticPlannerOutput:
     subtask_index: int | None = None
     subtasks: list[str] = field(default_factory=list)
     should_execute: bool = True
+    should_execute_explicit: bool = False
     task_complete: bool = False
     parse_ok: bool = True
     parse_error: str | None = None
+    decision: str | None = None
 
     def to_dict(self) -> JsonDict:
         return ensure_jsonable(self)  # type: ignore[return-value]
@@ -197,6 +265,7 @@ class AgenticSessionState:
     """Serializable long-horizon task state."""
 
     task: str = ""
+    phase: AgenticPhase = AgenticPhase.INIT
     subtasks: list[str] = field(default_factory=list)
     current_subtask: str | None = None
     subtask_index: int | None = None
@@ -204,6 +273,10 @@ class AgenticSessionState:
     monitor_error: str | None = None
     awaiting_monitor: bool = False
     monitor_namespace: str | None = None
+    active_execution: ActiveExecution | None = None
+    pending_events: list[AgenticEvent] = field(default_factory=list)
+    reason_requested: bool = True
+    last_reason_at: float | None = None
     last_tool_results: list[ToolResult] = field(default_factory=list)
     environment: JsonDict = field(default_factory=dict)
     step_index: int = 0
@@ -215,6 +288,7 @@ class AgenticSessionState:
         return ensure_jsonable(
             {
                 "task": self.task,
+                "phase": self.phase,
                 "subtasks": self.subtasks,
                 "current_subtask": self.current_subtask,
                 "subtask_index": self.subtask_index,
@@ -222,6 +296,10 @@ class AgenticSessionState:
                 "monitor_error": self.monitor_error,
                 "awaiting_monitor": self.awaiting_monitor,
                 "monitor_namespace": self.monitor_namespace,
+                "active_execution": self.active_execution,
+                "pending_events": self.pending_events,
+                "reason_requested": self.reason_requested,
+                "last_reason_at": self.last_reason_at,
                 "last_tool_results": self.last_tool_results,
                 "environment": self.environment,
                 "step_index": self.step_index,
@@ -233,8 +311,10 @@ class AgenticSessionState:
         if not data:
             return cls()
         monitor_status = data.get("monitor_status")
+        phase = data.get("phase")
         return cls(
             task=str(data.get("task") or ""),
+            phase=normalize_agentic_phase(phase) if phase else AgenticPhase.INIT,
             subtasks=[str(item) for item in data.get("subtasks", []) if str(item)],
             current_subtask=_optional_str(data.get("current_subtask")),
             subtask_index=_optional_int(data.get("subtask_index")),
@@ -242,6 +322,14 @@ class AgenticSessionState:
             monitor_error=_optional_str(data.get("monitor_error")),
             awaiting_monitor=bool(data.get("awaiting_monitor", False)),
             monitor_namespace=_optional_str(data.get("monitor_namespace")),
+            active_execution=_active_execution_from_dict(data.get("active_execution")),
+            pending_events=[
+                _event_from_dict(item)
+                for item in data.get("pending_events", [])
+                if isinstance(item, dict)
+            ],
+            reason_requested=bool(data.get("reason_requested", True)),
+            last_reason_at=_optional_float(data.get("last_reason_at")),
             last_tool_results=[
                 _tool_result_from_dict(item)
                 for item in data.get("last_tool_results", [])
@@ -302,6 +390,7 @@ class AgenticStepResult:
     step_index: int
     planner_input: AgenticPlannerInput
     planner_output: AgenticPlannerOutput
+    phase: AgenticPhase = AgenticPhase.RESPONSE
     vlm_called: bool = True
     tool_results: list[ToolResult] = field(default_factory=list)
     executor_output: ExecutorOutput | None = None
@@ -309,6 +398,9 @@ class AgenticStepResult:
     subtask_index: int | None = None
     monitor_status: MonitorStatus | None = None
     monitor_error: str | None = None
+    active_execution: ActiveExecution | None = None
+    events: list[AgenticEvent] = field(default_factory=list)
+    reason_requested: bool = False
     task_complete: bool = False
     parse_ok: bool = True
     parse_error: str | None = None
@@ -343,6 +435,40 @@ def _optional_int(value: Any | None) -> int | None:
     if value is None:
         return None
     return int(value)
+
+
+def _optional_float(value: Any | None) -> float | None:
+    if value is None:
+        return None
+    return float(value)
+
+
+def _active_execution_from_dict(value: Any | None) -> ActiveExecution | None:
+    if value is None:
+        return None
+    if not isinstance(value, dict):
+        raise TypeError("active_execution must be a JSON object")
+    return ActiveExecution(
+        subtask=str(value.get("subtask") or ""),
+        subtask_index=_optional_int(value.get("subtask_index")),
+        execution_id=_optional_str(value.get("execution_id")),
+        monitor_id=_optional_str(value.get("monitor_id")),
+        status=str(value.get("status") or MonitorStatus.RUNNING.value),
+        error=_optional_str(value.get("error")),
+        namespace=_optional_str(value.get("namespace")),
+        started_at=_optional_float(value.get("started_at")),
+        updated_at=_optional_float(value.get("updated_at")),
+    )
+
+
+def _event_from_dict(value: dict[str, Any]) -> AgenticEvent:
+    return AgenticEvent(
+        event_type=str(value.get("event_type") or value.get("type") or ""),
+        data=_json_dict_or_empty(value.get("data")),
+        source=_optional_str(value.get("source")),
+        message=_optional_str(value.get("message")),
+        created_at=_optional_float(value.get("created_at")),
+    )
 
 
 def _tool_result_from_dict(data: dict[str, Any]) -> ToolResult:

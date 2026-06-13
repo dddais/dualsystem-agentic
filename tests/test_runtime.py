@@ -131,6 +131,7 @@ def test_online_runtime_resets_session_state_between_tasks():
                 {
                     "subtasks": [f"{planner_input.task} part"],
                     "subtask_index": 0,
+                    "should_execute": False,
                 }
             )
         return json.dumps({"task_complete": True})
@@ -153,7 +154,12 @@ def test_online_runtime_resets_session_state_between_tasks():
 
 def test_online_runtime_marks_max_steps_and_keeps_waiting():
     def planner(planner_input):
-        return json.dumps({"current_subtask": f"work on {planner_input.task}"})
+        return json.dumps(
+            {
+                "current_subtask": f"work on {planner_input.task}",
+                "should_execute": False,
+            }
+        )
 
     interaction = ScriptedInteraction(["never done", "next task", None])
     runtime = OnlineAgentRuntime(
@@ -203,6 +209,7 @@ def test_online_runtime_does_not_count_monitor_polls_against_max_steps():
         AgenticRobotLoop(CallablePlanner(planner), client, RecordingExecutor()),
         interaction=interaction,
         max_steps=1,
+        reason_interval_s=0,
         monitor_poll_interval_s=0,
         max_monitor_polls=5,
     )
@@ -210,13 +217,57 @@ def test_online_runtime_does_not_count_monitor_polls_against_max_steps():
     summaries = runtime.serve_forever()
 
     assert summaries[0].stop_reason == "max_steps"
-    assert [step.vlm_called for step in interaction.steps] == [True, False, False]
+    assert [step.vlm_called for step in interaction.steps] == [True, False]
     assert [step.monitor_status.value for step in interaction.steps if step.monitor_status] == [
-        "running",
         "running",
         "success",
     ]
     assert planner_calls == [0]
+
+
+def test_online_runtime_monitor_event_triggers_next_reason_when_budget_remains():
+    client = FakeMCPToolClient()
+    monitor_statuses = iter(["running", "success"])
+    client.register(
+        "execute",
+        lambda args: {"executed": True, "status": "running", "subtask": args.get("subtask")},
+        namespace="demo",
+    )
+    client.register(
+        "monitor",
+        lambda args: {"status": next(monitor_statuses), "subtask": args.get("subtask")},
+        namespace="demo",
+    )
+    planner_events = []
+
+    def planner(planner_input):
+        planner_events.append([event.event_type for event in planner_input.events])
+        if len(planner_events) == 1:
+            return json.dumps(
+                {
+                    "tool_calls": [
+                        {"namespace": "demo", "name": "execute", "arguments": {"subtask": "pick cup"}}
+                    ],
+                    "current_subtask": "pick cup",
+                }
+            )
+        return json.dumps({"task_complete": True})
+
+    interaction = ScriptedInteraction(["clean table", None])
+    runtime = OnlineAgentRuntime(
+        AgenticRobotLoop(CallablePlanner(planner), client, RecordingExecutor()),
+        interaction=interaction,
+        max_steps=2,
+        reason_interval_s=3600,
+        monitor_poll_interval_s=0,
+        max_monitor_polls=5,
+    )
+
+    summaries = runtime.serve_forever()
+
+    assert summaries[0].stop_reason == "task_complete"
+    assert [step.vlm_called for step in interaction.steps] == [True, False, True]
+    assert planner_events[-1][-1] == "monitor_success"
 
 
 def test_online_runtime_stops_after_max_monitor_polls():
@@ -247,6 +298,7 @@ def test_online_runtime_stops_after_max_monitor_polls():
         AgenticRobotLoop(CallablePlanner(planner), client, RecordingExecutor()),
         interaction=interaction,
         max_steps=1,
+        reason_interval_s=0,
         monitor_poll_interval_s=0,
         max_monitor_polls=2,
     )
@@ -255,6 +307,52 @@ def test_online_runtime_stops_after_max_monitor_polls():
 
     assert summaries[0].stop_reason == "max_monitor_polls"
     assert [step.vlm_called for step in interaction.steps] == [True, False, False]
+    assert interaction.steps[-1].events[-1].event_type == "monitor_timeout"
+
+
+def test_online_runtime_monitor_timeout_event_triggers_replan_when_budget_remains():
+    client = FakeMCPToolClient()
+    client.register(
+        "execute",
+        lambda args: {"executed": True, "status": "running", "subtask": args.get("subtask")},
+        namespace="demo",
+    )
+    client.register(
+        "monitor",
+        lambda args: {"status": "running", "subtask": args.get("subtask")},
+        namespace="demo",
+    )
+    planner_events = []
+
+    def planner(planner_input):
+        planner_events.append([event.event_type for event in planner_input.events])
+        if len(planner_events) == 1:
+            return json.dumps(
+                {
+                    "tool_calls": [
+                        {"namespace": "demo", "name": "execute", "arguments": {"subtask": "pick cup"}}
+                    ],
+                    "current_subtask": "pick cup",
+                }
+            )
+        return json.dumps({"current_subtask": "recover from timeout", "should_execute": False})
+
+    interaction = ScriptedInteraction(["clean table", None])
+    runtime = OnlineAgentRuntime(
+        AgenticRobotLoop(CallablePlanner(planner), client, RecordingExecutor()),
+        interaction=interaction,
+        max_steps=2,
+        reason_interval_s=3600,
+        monitor_poll_interval_s=0,
+        max_monitor_polls=2,
+    )
+
+    summaries = runtime.serve_forever()
+
+    assert summaries[0].stop_reason == "max_steps"
+    assert [step.vlm_called for step in interaction.steps] == [True, False, False, True]
+    assert interaction.steps[-2].events[-1].event_type == "monitor_timeout"
+    assert planner_events[-1][-1] == "monitor_timeout"
 
 
 def test_online_runtime_logs_and_reports_task_errors_then_continues():
@@ -329,7 +427,12 @@ def test_online_runtime_jsonl_logger_records_each_task_session(tmp_path):
 
     def planner(planner_input):
         if planner_input.step_index == 0:
-            return json.dumps({"current_subtask": f"work on {planner_input.task}"})
+            return json.dumps(
+                {
+                    "current_subtask": f"work on {planner_input.task}",
+                    "should_execute": False,
+                }
+            )
         return json.dumps({"task_complete": True})
 
     loop = AgenticRobotLoop(

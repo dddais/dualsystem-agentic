@@ -16,6 +16,7 @@ Environment variables:
     DUAL_FRANKA_BRIDGE_URL       Bridge base URL (default: http://localhost:8767)
     DUAL_FRANKA_FETCH_ENV_PATH   Env/status path (default: /environment)
     DUAL_FRANKA_FETCH_ENV_METHOD Env/status method (default: GET)
+    DUAL_FRANKA_FETCH_ENV_HTTP   Set true to forward fetch_env to the bridge.
     DUAL_FRANKA_MONITOR_PATH     Monitor path (default: /task/monitor)
     DUAL_FRANKA_MONITOR_METHOD   Monitor method (default: POST)
     DUAL_FRANKA_EXECUTE_PATH     Execute path (default: /task/execute)
@@ -49,6 +50,7 @@ UNKNOWN_STATUS = os.environ.get("DUAL_FRANKA_UNKNOWN_STATUS") or "running"
 
 FETCH_ENV_PATH = os.environ.get("DUAL_FRANKA_FETCH_ENV_PATH") or "/environment"
 FETCH_ENV_METHOD = os.environ.get("DUAL_FRANKA_FETCH_ENV_METHOD") or "GET"
+FETCH_ENV_HTTP = (os.environ.get("DUAL_FRANKA_FETCH_ENV_HTTP") or "").lower() in {"1", "true", "yes", "on"}
 MONITOR_PATH = os.environ.get("DUAL_FRANKA_MONITOR_PATH") or "/task/monitor"
 MONITOR_METHOD = os.environ.get("DUAL_FRANKA_MONITOR_METHOD") or "POST"
 EXECUTE_PATH = os.environ.get("DUAL_FRANKA_EXECUTE_PATH") or "/task/execute"
@@ -62,24 +64,30 @@ app = Server("dual_franka_mcp_server")
 
 @app.list_tools()
 async def list_tools() -> list[types.Tool]:
-    return [
-        types.Tool(
-            name="fetch_env",
-            description=(
-                "Fetch the latest dual-Franka robot/environment state over HTTP. "
-                "Images are fetched separately by the configured HTTP DataLoader."
-            ),
-            inputSchema={
-                "type": "object",
-                "required": [],
-                "properties": {
-                    "include_status": {
-                        "type": "boolean",
-                        "description": "Optional bridge hint to include robot status in the environment payload.",
-                    }
+    tools: list[types.Tool] = []
+    if FETCH_ENV_HTTP:
+        tools.append(
+            types.Tool(
+                name="fetch_env",
+                description=(
+                    "Fetch structured scene/environment state for the dual-Franka planner. "
+                    "Images are fetched separately by the configured HTTP DataLoader."
+                ),
+                inputSchema={
+                    "type": "object",
+                    "required": [],
+                    "properties": {
+                        "include_status": {
+                            "type": "boolean",
+                            "description": "Optional bridge hint to include robot status in the environment payload.",
+                        }
+                    },
                 },
-            },
-        ),
+            )
+        )
+
+    tools.extend(
+        [
         types.Tool(
             name="monitor",
             description="Check current dual-Franka subtask status over HTTP; returns running / success / failed.",
@@ -149,7 +157,9 @@ async def list_tools() -> list[types.Tool]:
                 },
             },
         ),
-    ]
+        ]
+    )
+    return tools
 
 
 @app.call_tool()
@@ -182,6 +192,16 @@ async def _dispatch(client: httpx.AsyncClient, name: str, arguments: dict) -> di
 
 
 async def _fetch_env(client: httpx.AsyncClient, arguments: dict) -> dict:
+    if not FETCH_ENV_HTTP:
+        return {
+            "agentic_role": "fetch_env",
+            "environment": {},
+            "message": (
+                "No structured scene JSON provider is configured for dual-Franka. "
+                "Use the attached VLM images for visual observations."
+            ),
+        }
+
     payload = {"include_status": arguments.get("include_status")} if arguments else None
     data = await _request(
         client,

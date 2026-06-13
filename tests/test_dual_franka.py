@@ -112,6 +112,34 @@ def test_dual_franka_execute_auto_triggers_monitor():
     assert result["monitor"]["monitor"]["subtask"] == "pick up the cube"
 
 
+def test_dual_franka_fetch_env_tool_is_hidden_until_http_provider_enabled():
+    server = _load_dual_franka_server_module()
+    original = server.FETCH_ENV_HTTP
+    try:
+        server.FETCH_ENV_HTTP = False
+        tools = asyncio.run(server.list_tools())
+        assert "fetch_env" not in {tool.name for tool in tools}
+
+        server.FETCH_ENV_HTTP = True
+        tools = asyncio.run(server.list_tools())
+        assert "fetch_env" in {tool.name for tool in tools}
+    finally:
+        server.FETCH_ENV_HTTP = original
+
+
+def test_dual_franka_fetch_env_defaults_to_empty_structured_environment():
+    server = _load_dual_franka_server_module()
+    server.FETCH_ENV_HTTP = False
+    client = _RecordingHTTPClient([])
+
+    result = asyncio.run(server._fetch_env(client, {}))
+
+    assert client.requests == []
+    assert result["agentic_role"] == "fetch_env"
+    assert result["environment"] == {}
+    assert "No structured scene JSON provider" in result["message"]
+
+
 def test_http_dataloader_accepts_wrapped_bridge_image_response():
     dataloader = HTTPDataLoader(url="http://unused", image_key="concatenated_image", label="main")
     frame = dataloader._parse_response(

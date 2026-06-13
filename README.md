@@ -109,13 +109,19 @@ names, map only those roles:
 ```yaml
 loop:
   max_steps: 20              # VLM reasoning steps, not monitor-only polls
-  monitor_poll_interval_s: 1.0
+  reason_interval_s: 1.0     # VLM main-loop reasoning tick
+  monitor_poll_interval_s: 1.0 # legacy monitor poll tick
   max_monitor_polls: 300
+  include_metadata_in_prompt: false
   tool_roles:
     fetch_env: observe_scene
     monitor: check_status
     execute: run_subtask
 ```
+
+`reason_interval_s` controls how often the VLM reasons when no event is pending.
+`monitor_poll_interval_s` controls the async monitor compatibility poll, so it can
+be faster or slower than the VLM loop.
 
 Most new tools need no role mapping at all. The loop also recognizes common
 structured outputs from any tool:
@@ -123,7 +129,7 @@ structured outputs from any tool:
 | Tool output | Loop effect |
 |-------------|-------------|
 | `{"status": "running|success|failed"}` | update monitor feedback |
-| `{"environment": {...}}` or `{"env": {...}}` | merge scene state into planner context |
+| `{"scene_graph": {...}}`, `{"environment": {...}}`, or `{"env": {...}}` | merge scene state into planner context |
 | `{"executed": true}` | treat action as already executed by MCP and skip downstream executor |
 | `{"agentic_role": "monitor|fetch_env|execute"}` | explicit role hint for unusual outputs |
 
@@ -276,6 +282,18 @@ steps, subtasks, image paths, tool calls, tool results, executor output, parse
 errors, and stop reasons, and `prompt.log` stores the full rendered planner
 prompt for each step in readable blocks. Images are saved as files under the
 session/step directory, while JSONL stores only path/hash/size references.
+
+Render each session in a run into an annotated three-camera MP4 with controller
+phase, current subtask, monitor status, VLM/monitor-only steps, events, and a
+subtask timeline:
+
+```bash
+PYTHONPATH=src python examples/visualize_run_video.py \
+  --run-dir runs/run_20260611_173450
+```
+
+Use `--session <session_id>` for one long-horizon task, or `--combine-run` for a
+single run-level overview video.
 
 ```yaml
 logging:

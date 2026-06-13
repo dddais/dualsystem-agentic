@@ -7,6 +7,9 @@ from dualsystem_agentic.core.loop import AgenticRobotLoop
 from dualsystem_agentic.core.parser import parse_agentic_planner_output
 from dualsystem_agentic.core.prompts import build_agentic_prompt
 from dualsystem_agentic.core.types import (
+    ActiveExecution,
+    AgenticEvent,
+    AgenticPhase,
     AgenticPlannerInput,
     AgenticPlannerOutput,
     AgenticSessionState,
@@ -32,6 +35,9 @@ from dualsystem_agentic.runtime import OnlineAgentRuntime
 from dualsystem_agentic.vlm.base import CallablePlanner, VLMPlanner
 
 __all__ = [
+    "ActiveExecution",
+    "AgenticEvent",
+    "AgenticPhase",
     "AgenticRobotLoop",
     "OnlineRobotApp",
     "AgenticPlannerInput",

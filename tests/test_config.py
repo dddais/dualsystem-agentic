@@ -17,8 +17,10 @@ from dualsystem_agentic.config import (
     build_vlm,
 )
 from dualsystem_agentic.core.parser import parse_agentic_planner_output
+from dualsystem_agentic.core.types import AgenticPlannerInput, ImageInput
 from dualsystem_agentic.interaction import TuiInteractionLayer
 from dualsystem_agentic.vlm.scripted import ScriptedVLMPlanner
+from dualsystem_agentic.vlm.visual_scene_prepass import VisualScenePrepassPlanner
 
 
 def test_scripted_vlm_replays_script_for_each_new_task():
@@ -42,6 +44,63 @@ def test_scripted_vlm_replays_script_for_each_new_task():
     assert json.loads(first)["current_subtask"] == "step one"
     assert json.loads(second)["task_complete"] is True
     assert json.loads(replayed)["current_subtask"] == "step one"
+
+
+def test_visual_scene_prepass_injects_scene_into_planner_environment():
+    class Planner:
+        def __init__(self):
+            self.planner_inputs = []
+            self.text_prompts = []
+
+        def generate_text(self, prompt, *, images=None, sampling_params=None):
+            self.text_prompts.append((prompt, images, sampling_params))
+            return json.dumps(
+                {
+                    "objects": [{"name": "pink cup", "type": "cup"}],
+                    "target_locations": ["dish rack"],
+                    "summary": "A cup is on the table.",
+                }
+            )
+
+        def generate(self, planner_input):
+            self.planner_inputs.append(planner_input)
+            return json.dumps({"current_subtask": "Pick up the pink cup."})
+
+    planner = Planner()
+    wrapped = VisualScenePrepassPlanner(
+        planner,
+        prompt_template="Task: {task}",
+        sampling_params={"max_new_tokens": 64},
+    )
+
+    output = wrapped.generate(
+        AgenticPlannerInput(
+            task="organize the desk",
+            images={"main": ImageInput(type="base64", data="abc")},
+            environment={"existing": "state"},
+        )
+    )
+
+    assert json.loads(output)["current_subtask"] == "Pick up the pink cup."
+    assert planner.text_prompts[0][0] == "Task: organize the desk"
+    assert planner.text_prompts[0][2] == {"max_new_tokens": 64}
+    enriched = planner.planner_inputs[0]
+    assert enriched.environment["existing"] == "state"
+    assert enriched.environment["visual_scene"]["objects"][0]["name"] == "pink cup"
+    assert enriched.environment["visual_scene"]["target_locations"] == ["dish rack"]
+
+
+def test_visual_scene_prepass_config_wraps_supported_planner():
+    planner = build_vlm(
+        VLMConfig(
+            provider="openai_compatible",
+            model="dummy",
+            visual_scene_prepass=True,
+            visual_scene_sampling_params={"max_tokens": 128},
+        )
+    )
+
+    assert isinstance(planner, VisualScenePrepassPlanner)
 
 
 def test_fake_mcp_tools_can_be_declared_in_config():
@@ -140,11 +199,18 @@ def test_loop_tool_roles_are_optional_defaults():
     config = AppConfig.from_dict({"loop": {"max_steps": 7}})
 
     assert config.loop.max_steps == 7
+    assert config.loop.reason_interval_s == 1.0
     assert config.loop.monitor_poll_interval_s == 1.0
     assert config.loop.max_monitor_polls == 300
     assert config.loop.monitor_tool_name == "monitor"
     assert config.loop.execute_tool_name == "execute"
     assert config.loop.fetch_env_tool_name == "fetch_env"
+
+
+def test_loop_reason_interval_is_configurable():
+    config = AppConfig.from_dict({"loop": {"reason_interval_s": 0.25}})
+
+    assert config.loop.reason_interval_s == 0.25
 
 
 def test_loop_tool_roles_can_override_nonstandard_tool_names():

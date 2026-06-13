@@ -4,15 +4,32 @@
 # It reads images from /tmp/img and monitor files from /tmp/subtask.txt +
 # /tmp/monitor_result.txt, while execution/control endpoints are placeholders.
 # Image acquisition, monitor, execution, and extra robot utilities all go through HTTP.
+
+# vlm:
+#   provider: openai_compatible
+#   model: gemini-3-pro-preview
+#   base_url: https://api.vectorengine.ai/v1
+#   api_key: sk-beOMdW9cnMdLsxG47X4kocPkB6BssOSQiwPIzqfaLEjgukD4
+#   # Keep real keys out of committed YAML files.
+#   timeout: 60.0
+#   sampling_params:
+#     temperature: 0.2
+#     max_tokens: 768
+
 vlm:
-  provider: openai_compatible
-  model: gemini-3-pro-preview
-  base_url: https://api.vectorengine.ai/v1
-  api_key: sk-beOMdW9cnMdLsxG47X4kocPkB6BssOSQiwPIzqfaLEjgukD4
-  timeout: 60.0
+  provider: local_qwen
+  model_path: /home/ubuntu/dais/models/RoboBrain2.5-4B   # 也可以写本地下载路径，如 /data/models/RoboBrain2.5-4B
+  model_family: qwen3
+  device: cuda:0
+  dtype: bf16
+  visual_scene_prepass: false
+  visual_scene_sampling_params:
+    do_sample: false
+    max_new_tokens: 256
   sampling_params:
-    temperature: 0.2
-    max_tokens: 768
+    do_sample: false
+    temperature: 0.7
+    max_new_tokens: 512
 
 executor:
   # Execution is handled by dual_franka___execute over MCP -> HTTP.
@@ -35,13 +52,19 @@ mcp:
         DUAL_FRANKA_STOP_PATH: /task/stop
         DUAL_FRANKA_RESET_PATH: /task/reset
         DUAL_FRANKA_ESTOP_PATH: /task/emergency_stop
+        DUAL_FRANKA_TIMEOUT_S: 30.0
+        DUAL_FRANKA_UNKNOWN_STATUS: running
+        # DUAL_FRANKA_FETCH_ENV_HTTP: "true"
 
 loop:
   max_steps: 20
   # VLM reasoning steps are limited by max_steps; monitor-only polls do not
-  # consume that budget. Adjust these two values for real robot timing.
+  # consume that budget. Keep monitor polling faster than VLM reasoning so
+  # terminal monitor events are picked up promptly without over-calling the VLM.
+  reason_interval_s: 10.0
   monitor_poll_interval_s: 1.0
   max_monitor_polls: 300
+  include_metadata_in_prompt: false
 
 dataloader:
   provider: http

@@ -9,7 +9,7 @@ import urllib.request
 from typing import Any
 
 from dualsystem_agentic.core.prompts import build_agentic_prompt
-from dualsystem_agentic.core.types import AgenticPlannerInput
+from dualsystem_agentic.core.types import AgenticPlannerInput, ImageInput
 from dualsystem_agentic.io.image import image_to_openai_content
 
 
@@ -32,6 +32,23 @@ class OpenAICompatibleVLMPlanner:
 
     def generate(self, planner_input: AgenticPlannerInput) -> str:
         payload = self._build_payload(planner_input)
+        return self._request_content(payload)
+
+    def generate_text(
+        self,
+        prompt: str,
+        *,
+        images: dict[str, ImageInput] | None = None,
+        sampling_params: dict[str, Any] | None = None,
+    ) -> str:
+        payload = self._build_text_payload(
+            prompt,
+            images or {},
+            sampling_params=sampling_params,
+        )
+        return self._request_content(payload)
+
+    def _request_content(self, payload: dict[str, Any]) -> str:
         request = urllib.request.Request(
             self._chat_url(),
             data=json.dumps(payload).encode("utf-8"),
@@ -49,16 +66,29 @@ class OpenAICompatibleVLMPlanner:
         return self._extract_content(response_data)
 
     def _build_payload(self, planner_input: AgenticPlannerInput) -> dict[str, Any]:
-        content: list[dict[str, Any]] = []
-        for image in planner_input.images.values():
-            content.append(image_to_openai_content(image))
-        content.append({"type": "text", "text": build_agentic_prompt(planner_input)})
+        return self._build_text_payload(
+            build_agentic_prompt(planner_input),
+            planner_input.images,
+        )
 
+    def _build_text_payload(
+        self,
+        prompt: str,
+        images: dict[str, ImageInput],
+        *,
+        sampling_params: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        content: list[dict[str, Any]] = []
+        for image in images.values():
+            content.append(image_to_openai_content(image))
+        content.append({"type": "text", "text": prompt})
         payload: dict[str, Any] = {
             "model": self.model,
             "messages": [{"role": "user", "content": content}],
         }
         payload.update(_normalize_sampling_params(self.default_sampling_params))
+        if sampling_params:
+            payload.update(_normalize_sampling_params(sampling_params))
         return payload
 
     def _headers(self) -> dict[str, str]:

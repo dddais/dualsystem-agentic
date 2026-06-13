@@ -94,7 +94,7 @@ def test_jsonl_logger_records_step_without_embedding_base64_images(tmp_path):
 
     human_log = (tmp_path / "test-run" / "events.log").read_text(encoding="utf-8")
     assert "SESSION STARTED" in human_log
-    assert "STEP session=session_0001 step=0 vlm=called parse=ok complete=False" in human_log
+    assert "STEP session=session_0001 step=0 phase=response vlm=called parse=ok complete=False" in human_log
     assert "task: tidy the desk" in human_log
     assert "current: clear cups" in human_log
     assert "planner_prompt:" in human_log

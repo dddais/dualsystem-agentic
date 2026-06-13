@@ -20,63 +20,144 @@ Planning protocol:
   when needed, e.g. a subtask failed, the scene differs from expectation, or extra
   steps are required. Omit "subtasks" if the plan is unchanged.
 
+Executable subtask constraints:
+- Every item in "subtasks" must be a concrete physical robot action that can be
+  sent directly to the execute tool or downstream executor.
+- Use the attached images to name visible objects and target locations directly
+  before writing subtasks.
+- Do NOT create subtasks for checking status, monitoring, observing, analyzing
+  images, planning, deciding, verifying, ensuring, or conditional logic.
+- Do NOT write conditional subtasks such as "if items are present..." or vague
+  subtasks such as "organize the items".
+- Good subtasks:
+  - "Pick up the pink cup and place it in the dish rack."
+  - "Pick up the blue bowl and place it in the dish rack."
+- Bad subtasks:
+  - "Check the status of the current task."
+  - "Analyze the image to identify all items."
+  - "If items are present, move them to the dish rack."
+  - "Perform a final check to ensure all items are organized."
+
 Tool use:
 - Call ONLY tools from the "Available tools" list, by the exact canonical name
   shown, and pass arguments that match the listed signature.
 - Any available tool may be called; newly exposed robot tools do not need a
   special config entry. Interpret their listed description and schema.
 - Tools that report subtask status should return {"status": "running|success|failed"}.
-  Tools that return scene state may return {"environment": {...}}. Tools that
-  perform an action may return {"executed": true}; in that case the downstream
-  executor is skipped for that step.
-- Use the latest tool results and status to decide whether to advance to the next
-  subtask, retry the current one, or revise the plan.
+  Tools that return scene state may return {"scene_graph": {...}},
+  {"environment": {...}}, or {"env": {...}}. Tools that perform an action may
+  return {"executed": true}; in that case the downstream executor is skipped for
+  that step.
+- Treat execute as STARTING an asynchronous robot action, not as proof that the
+  action finished. A monitor event/status tells you whether the action is still
+  running, succeeded, failed, or timed out.
+- If Active execution is running, DO NOT start any new execute action. You may
+  observe, update the plan, wait, cancel/stop with an available safety tool, or
+  react to monitor events. Set "should_execute": false while waiting/observing.
+- A monitor_success event means the active action reached a terminal success; now
+  advance to the next subtask or complete the task. A monitor_failed or
+  monitor_timeout event means retry, replan, cancel, ask for help, or abort.
+- Set "task_complete": true only when the whole task is finished AND there is no
+  running Active execution.
 
 Respond with ONLY a JSON object, no extra prose:
 {
+  "decision": "plan|execute|observe|wait|replan|cancel|complete|noop",
   "tool_calls": [
     {"name": "<canonical tool name from the list>", "arguments": {}}
   ],
   "subtasks": ["<full ordered plan; required on the first step and whenever you revise it>"],
   "subtask_index": <0-based index of the current subtask within the plan>,
   "current_subtask": "<optional: the subtask text; defaults to subtasks[subtask_index]>",
+  "should_execute": false,
   "task_complete": false
 }
-Set "task_complete" to true only when the whole task is finished."""
+Use "should_execute": true only when you want the downstream executor to start
+the current_subtask and you did not call an execute tool. Use "should_execute":
+false for plan, observe, wait, cancel, complete, and noop decisions."""
 
 
 def build_agentic_prompt(planner_input: AgenticPlannerInput) -> str:
     """Render an ``AgenticPlannerInput`` into a planner prompt string."""
-    sections: list[str] = [_SYSTEM_INSTRUCTION, f"Task: {planner_input.task}"]
+    sections: list[str] = [_SYSTEM_INSTRUCTION]
+
+    visual_block = _format_visual_observations(planner_input)
+    if visual_block:
+        sections.append(visual_block)
 
     tools_block = _format_available_tools(planner_input)
     if tools_block:
         sections.append(tools_block)
 
+    sections.append(_format_session_memory(planner_input))
+    sections.append("Now produce the JSON object for the next step.")
+    return "\n\n".join(sections)
+
+
+def _format_session_memory(planner_input: AgenticPlannerInput) -> str:
+    lines = [
+        "Session memory / Runtime state:",
+        f"  Task: {planner_input.task}",
+        f"  Controller phase: {planner_input.phase.value}",
+        f"  Step index: {planner_input.step_index}",
+        f"  Reason requested: {str(planner_input.reason_requested).lower()}",
+    ]
+
     if planner_input.subtasks:
-        sections.append(
-            "Subtask plan (select the current one by index, or revise the list):\n"
-            + _format_plan(planner_input.subtasks, planner_input.subtask_index)
+        lines.append(
+            "  Subtask plan (select the current one by index, or revise the list):"
         )
+        plan_lines = _format_plan(
+            planner_input.subtasks,
+            planner_input.subtask_index,
+        ).splitlines()
+        lines.extend(f"  {line}" for line in plan_lines)
     else:
-        sections.append("Subtask plan: none yet — decompose the task into subtasks first.")
+        lines.append("  Subtask plan: none yet - decompose the task into subtasks first.")
+
+    if planner_input.current_subtask:
+        lines.append(f"  Current subtask: {planner_input.current_subtask}")
 
     if planner_input.monitor_status is not None:
         monitor_line = f"Status of the current subtask: {planner_input.monitor_status.value}"
         if planner_input.monitor_error:
             monitor_line += f" (error: {planner_input.monitor_error})"
-        sections.append(monitor_line)
+        lines.append(f"  {monitor_line}")
+
+    if planner_input.active_execution is not None:
+        lines.append("  Active execution:")
+        lines.append("  " + _format_json(planner_input.active_execution.to_dict()))
+
+    if planner_input.events:
+        lines.append("  Pending events:")
+        lines.extend(f"  {line}" for line in _format_events(planner_input).splitlines())
 
     if planner_input.environment:
-        sections.append("Environment state:\n" + _format_json(planner_input.environment))
+        lines.append("  Scene graph:")
+        lines.append("  " + _format_json(planner_input.environment))
 
     if planner_input.tool_results:
-        sections.append(
-            "Results of tools called last step:\n" + _format_tool_results(planner_input)
-        )
+        lines.append("  Results of tools called last step:")
+        lines.extend(f"  {line}" for line in _format_tool_results(planner_input).splitlines())
 
-    sections.append("Now produce the JSON object for the next step.")
-    return "\n\n".join(sections)
+    if planner_input.metadata:
+        lines.append("  Planner-visible metadata:")
+        lines.append("  " + _format_json(planner_input.metadata))
+
+    return "\n".join(lines)
+
+
+def _format_visual_observations(planner_input: AgenticPlannerInput) -> str:
+    if not planner_input.images:
+        return ""
+    labels = ", ".join(planner_input.images.keys())
+    lines = [
+        "Visual observations:",
+        f"- Images are attached before this text in this label order: {labels}.",
+        "- Treat the attached images as the latest visual observation for this reason step.",
+        "- Use Scene graph only when it is present; it is structured memory and may not be refreshed on every VLM call.",
+    ]
+    return "\n".join(lines)
 
 
 def _format_available_tools(planner_input: AgenticPlannerInput) -> str:
@@ -121,6 +202,14 @@ def _format_tool_results(planner_input: AgenticPlannerInput) -> str:
             lines.append(f"  - {display}: ok {_format_json(result.data)}")
         else:
             lines.append(f"  - {display}: error {result.error}")
+    return "\n".join(lines)
+
+
+def _format_events(planner_input: AgenticPlannerInput) -> str:
+    lines = []
+    for event in planner_input.events:
+        payload = event.to_dict()
+        lines.append(f"  - {event.event_type}: {_format_json(payload)}")
     return "\n".join(lines)
 
 

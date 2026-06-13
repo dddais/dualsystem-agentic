@@ -146,6 +146,7 @@ class JsonlRunLogger:
                 "session_id": session_id,
                 "time": time.time(),
                 "step_index": result.step_index,
+                "phase": result.phase.value,
                 "vlm_called": result.vlm_called,
                 "planner_input": planner_input,
                 "planner_prompt": planner_prompt,
@@ -159,6 +160,11 @@ class JsonlRunLogger:
                 "subtask_index": result.subtask_index,
                 "monitor_status": result.monitor_status.value if result.monitor_status else None,
                 "monitor_error": result.monitor_error,
+                "active_execution": result.active_execution.to_dict()
+                if result.active_execution
+                else None,
+                "events": [event.to_dict() for event in result.events],
+                "reason_requested": result.reason_requested,
                 "task_complete": result.task_complete,
                 "parse_ok": result.parse_ok,
                 "parse_error": result.parse_error,
@@ -376,6 +382,7 @@ def _format_step(event: JsonDict) -> str:
             f"[{_human_time(event.get('time'))}] STEP "
             f"session={event.get('session_id')} "
             f"step={event.get('step_index')} "
+            f"phase={event.get('phase')} "
             f"vlm={_vlm_state(event)} "
             f"parse={_parse_state(event)} "
             f"complete={event.get('task_complete')}"
@@ -391,6 +398,12 @@ def _format_step(event: JsonDict) -> str:
     monitor_error = event.get("monitor_error")
     if monitor_status or monitor_error:
         lines.append(f"  monitor: status={monitor_status} error={_one_line(monitor_error)}")
+    active_execution = event.get("active_execution")
+    if active_execution:
+        lines.append(f"  active_execution: {_compact_json(active_execution, max_chars=1000)}")
+    events = event.get("events")
+    if events:
+        lines.append(f"  events: {_compact_json(events, max_chars=1000)}")
 
     _append_subtasks(lines, planner_input, planner_output, event.get("subtask_index"))
     _append_images(lines, planner_input)

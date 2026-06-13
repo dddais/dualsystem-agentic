@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Callable, Protocol
 
-from dualsystem_agentic.core.types import AgenticPlannerInput
+from dualsystem_agentic.core.types import AgenticPlannerInput, ImageInput
 
 
 class VLMPlanner(Protocol):
@@ -12,6 +12,19 @@ class VLMPlanner(Protocol):
 
     def generate(self, planner_input: AgenticPlannerInput) -> str:
         """Return one raw planner output (expected to be a JSON object string)."""
+
+
+class VisionTextGenerator(Protocol):
+    """Optional extension for direct image+text prompts."""
+
+    def generate_text(
+        self,
+        prompt: str,
+        *,
+        images: dict[str, ImageInput] | None = None,
+        sampling_params: dict[str, object] | None = None,
+    ) -> str:
+        """Return raw model text for a custom multimodal prompt."""
 
 
 class CallablePlanner:

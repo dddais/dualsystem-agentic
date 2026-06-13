@@ -29,6 +29,9 @@ class VLMConfig:
     min_pixels: int = 256 * 28 * 28
     max_pixels: int = 1280 * 28 * 28
     sampling_params: JsonDict = field(default_factory=dict)
+    visual_scene_prepass: bool = False
+    visual_scene_prompt: str | None = None
+    visual_scene_sampling_params: JsonDict = field(default_factory=dict)
     script: list[Any] = field(default_factory=list)
     script_file: str | None = None
     repeat_last: bool = False
@@ -53,8 +56,10 @@ class MCPConfig:
 @dataclass
 class LoopConfig:
     max_steps: int = 20
+    reason_interval_s: float = 1.0
     monitor_poll_interval_s: float = 1.0
     max_monitor_polls: int = 300
+    include_metadata_in_prompt: bool = False
     monitor_tool_name: str = "monitor"
     execute_tool_name: str = "execute"
     fetch_env_tool_name: str = "fetch_env"
@@ -142,38 +147,62 @@ def build_vlm(config: VLMConfig) -> VLMPlanner:
         outputs = list(config.script)
         if config.script_file:
             outputs.extend(_load_script_file(config.script_file))
-        return ScriptedVLMPlanner(
-            outputs,
-            repeat_last=config.repeat_last,
-            reset_on_new_task=config.reset_on_new_task,
+        return _maybe_wrap_visual_scene_prepass(
+            ScriptedVLMPlanner(
+                outputs,
+                repeat_last=config.repeat_last,
+                reset_on_new_task=config.reset_on_new_task,
+            ),
+            config,
         )
     if provider == "openai_compatible":
         from dualsystem_agentic.vlm.openai_compatible import OpenAICompatibleVLMPlanner
 
         if not config.model:
             raise ValueError("vlm.model is required for the openai_compatible provider")
-        return OpenAICompatibleVLMPlanner(
-            model=config.model,
-            base_url=config.base_url,
-            api_key=config.api_key,
-            timeout=config.timeout,
-            default_sampling_params=config.sampling_params,
+        return _maybe_wrap_visual_scene_prepass(
+            OpenAICompatibleVLMPlanner(
+                model=config.model,
+                base_url=config.base_url,
+                api_key=config.api_key,
+                timeout=config.timeout,
+                default_sampling_params=config.sampling_params,
+            ),
+            config,
         )
     if provider == "local_qwen":
         from dualsystem_agentic.vlm.local_qwen import LocalQwenVLMPlanner
 
         if not config.model_path:
             raise ValueError("vlm.model_path is required for the local_qwen provider")
-        return LocalQwenVLMPlanner(
-            model_path=config.model_path,
-            model_family=config.model_family,
-            dtype=config.dtype,
-            device=config.device,
-            min_pixels=config.min_pixels,
-            max_pixels=config.max_pixels,
-            default_sampling_params=config.sampling_params,
+        return _maybe_wrap_visual_scene_prepass(
+            LocalQwenVLMPlanner(
+                model_path=config.model_path,
+                model_family=config.model_family,
+                dtype=config.dtype,
+                device=config.device,
+                min_pixels=config.min_pixels,
+                max_pixels=config.max_pixels,
+                default_sampling_params=config.sampling_params,
+            ),
+            config,
         )
     raise ValueError(f"Unsupported VLM provider: {provider}")
+
+
+def _maybe_wrap_visual_scene_prepass(planner: VLMPlanner, config: VLMConfig) -> VLMPlanner:
+    if not config.visual_scene_prepass:
+        return planner
+    from dualsystem_agentic.vlm.visual_scene_prepass import (
+        DEFAULT_VISUAL_SCENE_PROMPT,
+        VisualScenePrepassPlanner,
+    )
+
+    return VisualScenePrepassPlanner(
+        planner,
+        prompt_template=config.visual_scene_prompt or DEFAULT_VISUAL_SCENE_PROMPT,
+        sampling_params=config.visual_scene_sampling_params,
+    )
 
 
 def build_executor(config: ExecutorConfig) -> ExecutorClient:

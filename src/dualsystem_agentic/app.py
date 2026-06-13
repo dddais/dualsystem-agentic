@@ -67,12 +67,14 @@ def build_online_robot_app(
         execute_tool_name=config.loop.execute_tool_name,
         fetch_env_tool_name=config.loop.fetch_env_tool_name,
         dataloader=dataloader,
+        include_metadata_in_prompt=config.loop.include_metadata_in_prompt,
     )
     runtime = OnlineAgentRuntime(
         loop,
         interaction=interaction or build_interaction(config.interaction),
         logger=logger or build_run_logger(config.logging),
         max_steps=max_steps if max_steps is not None else config.loop.max_steps,
+        reason_interval_s=config.loop.reason_interval_s,
         monitor_poll_interval_s=config.loop.monitor_poll_interval_s,
         max_monitor_polls=config.loop.max_monitor_polls,
     )
@@ -101,6 +103,7 @@ def build_agentic_robot_loop_app(
         execute_tool_name=config.loop.execute_tool_name,
         fetch_env_tool_name=config.loop.fetch_env_tool_name,
         dataloader=dataloader,
+        include_metadata_in_prompt=config.loop.include_metadata_in_prompt,
     )
     return loop, mcp_client
 
