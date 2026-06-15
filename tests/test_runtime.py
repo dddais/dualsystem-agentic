@@ -19,7 +19,7 @@ from dualsystem_agentic import (
     OnlineTaskSummary,
 )
 from dualsystem_agentic.io.dataloader import StaticDataLoader
-from dualsystem_agentic.core.types import AgenticPlannerInput, AgenticPlannerOutput, ImageInput
+from dualsystem_agentic.core.types import AgenticPlannerInput, AgenticPlannerOutput, ImageInput, ToolResult
 from dualsystem_agentic.run_logger import JsonlRunLogger
 
 
@@ -117,6 +117,31 @@ def _step_with_plan(step_index: int, subtasks: list[str], subtask_index: int = 0
         current_subtask=subtasks[subtask_index],
         subtask_index=subtask_index,
     )
+
+
+def test_console_step_shows_parse_and_tool_errors():
+    output = io.StringIO()
+    interaction = ConsoleInteractionLayer(output_stream=output)
+    result = AgenticStepResult(
+        task="task",
+        step_index=3,
+        planner_input=AgenticPlannerInput(task="task", step_index=3),
+        planner_output=AgenticPlannerOutput(raw_output="{}"),
+        tool_results=[
+            ToolResult.failure(
+                "execute",
+                "HTTP 500",
+                namespace="dual_franka",
+            )
+        ],
+        parse_error="bad tool call",
+    )
+
+    interaction.show_step(result)
+
+    text = output.getvalue()
+    assert "parse_error=bad tool call" in text
+    assert "tool_error=dual_franka.execute: HTTP 500" in text
 
 
 def test_online_runtime_resets_session_state_between_tasks():

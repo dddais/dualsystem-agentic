@@ -79,6 +79,97 @@ def test_dual_franka_execute_auto_triggers_monitor():
     server = _load_dual_franka_server_module()
     client = _RecordingHTTPClient(
         [
+            {
+                "success": True,
+                "data": {
+                    "executed": True,
+                    "placeholder": True,
+                    "execution_id": "exec-1",
+                    "monitor_id": "mon-1",
+                },
+            },
+            {
+                "success": True,
+                "data": {
+                    "status": "running",
+                    "subtask": "pick up the cube",
+                    "subtask_index": 2,
+                    "execution_id": "exec-1",
+                    "monitor_id": "mon-1",
+                },
+            },
+        ]
+    )
+
+    result = asyncio.run(
+        server._execute(
+            client,
+            {
+                "subtask": "pick up the cube",
+                "subtask_index": 2,
+            },
+        )
+    )
+
+    assert [request["path"] for request in client.requests] == ["/executions", "/monitors/status"]
+    assert client.requests[1]["json"]["subtask"] == "pick up the cube"
+    assert client.requests[1]["json"]["subtask_index"] == 2
+    assert client.requests[1]["json"]["execution_id"] == "exec-1"
+    assert client.requests[1]["json"]["monitor_id"] == "mon-1"
+    assert result["executed"] is True
+    assert result["execution_id"] == "exec-1"
+    assert result["monitor_id"] == "mon-1"
+    assert result["status"] == "running"
+    assert result["monitor_status"] == "running"
+    assert result["monitor"]["monitor"]["subtask"] == "pick up the cube"
+
+
+def test_dual_franka_execute_does_not_poll_monitor_after_failed_start():
+    server = _load_dual_franka_server_module()
+    client = _RecordingHTTPClient(
+        [
+            {
+                "success": True,
+                "data": {
+                    "executed": False,
+                    "status": "failed",
+                    "execution_id": "exec-1",
+                    "monitor_id": "mon-1",
+                    "error": "remote monitor request failed",
+                },
+            },
+        ]
+    )
+
+    result = asyncio.run(server._execute(client, {"subtask": "pick up the cube"}))
+
+    assert [request["path"] for request in client.requests] == ["/executions"]
+    assert result["executed"] is False
+    assert result["status"] == "failed"
+    assert result["monitor_status"] == "failed"
+    assert result["monitor"]["error"] == "remote monitor request failed"
+
+
+def test_dual_franka_request_includes_runtime_error_body():
+    server = _load_dual_franka_server_module()
+    client = _RecordingHTTPClient(
+        [
+            {
+                "success": False,
+                "message": "remote monitor returned HTTP 404: unknown monitor_id",
+            },
+        ],
+        status_codes=[500],
+    )
+
+    with pytest.raises(RuntimeError, match="unknown monitor_id"):
+        asyncio.run(server._request(client, "POST", "/monitors/status", json_data={"monitor_id": "mon-1"}))
+
+
+def test_dual_franka_legacy_paths_remain_configurable():
+    server = _load_dual_franka_server_module()
+    client = _RecordingHTTPClient(
+        [
             {"success": True, "data": {"executed": True, "placeholder": True}},
             {
                 "success": True,
@@ -91,25 +182,25 @@ def test_dual_franka_execute_auto_triggers_monitor():
             },
         ]
     )
-
-    result = asyncio.run(
-        server._execute(
-            client,
-            {
-                "subtask": "pick up the cube",
-                "subtask_index": 2,
-                "task_id": "task-1",
-            },
+    original_paths = (server.EXECUTE_PATH, server.MONITOR_PATH)
+    try:
+        server.EXECUTE_PATH = "/task/execute"
+        server.MONITOR_PATH = "/task/monitor"
+        result = asyncio.run(
+            server._execute(
+                client,
+                {
+                    "subtask": "pick up the cube",
+                    "subtask_index": 2,
+                    "task_id": "task-1",
+                },
+            )
         )
-    )
+    finally:
+        server.EXECUTE_PATH, server.MONITOR_PATH = original_paths
 
     assert [request["path"] for request in client.requests] == ["/task/execute", "/task/monitor"]
-    assert client.requests[1]["json"]["subtask"] == "pick up the cube"
-    assert client.requests[1]["json"]["subtask_index"] == 2
-    assert result["executed"] is True
-    assert result["status"] == "running"
-    assert result["monitor_status"] == "running"
-    assert result["monitor"]["monitor"]["subtask"] == "pick up the cube"
+    assert result["task_id"] == "task-1"
 
 
 def test_dual_franka_fetch_env_tool_is_hidden_until_http_provider_enabled():
@@ -253,22 +344,36 @@ def test_dual_franka_bridge_reads_monitor_result_json_and_text(tmp_path):
 
 
 class _RecordingHTTPClient:
-    def __init__(self, responses: list[dict]):
+    def __init__(self, responses: list[dict], *, status_codes: list[int] | None = None):
         self.responses = list(responses)
+        self.status_codes = list(status_codes or [])
         self.requests: list[dict] = []
 
     async def request(self, method: str, path: str, *, json=None, params=None):
         self.requests.append({"method": method, "path": path, "json": json, "params": params})
-        return _FakeHTTPResponse(self.responses.pop(0))
+        status_code = self.status_codes.pop(0) if self.status_codes else 200
+        return _FakeHTTPResponse(self.responses.pop(0), status_code=status_code)
 
 
 class _FakeHTTPResponse:
-    def __init__(self, payload: dict):
+    def __init__(self, payload: dict, *, status_code: int = 200):
         self._payload = payload
         self.content = b"{}"
+        self.status_code = status_code
+        self.url = "http://runtime.local/test"
+        self.request = None
+        self.text = json.dumps(payload)
 
     def raise_for_status(self) -> None:
-        pass
+        if self.status_code >= 400:
+            import httpx
+
+            request = httpx.Request("POST", str(self.url))
+            raise httpx.HTTPStatusError(
+                f"{self.status_code} error",
+                request=request,
+                response=self,
+            )
 
     def json(self) -> dict:
         return self._payload

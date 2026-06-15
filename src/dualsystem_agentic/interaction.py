@@ -106,11 +106,13 @@ class ConsoleInteractionLayer:
         tools = ", ".join(tool.tool_name for tool in result.tool_results) or "-"
         status = result.monitor_status.value if result.monitor_status else "-"
         complete = " complete" if result.task_complete else ""
+        parse = f" parse_error={result.parse_error}" if result.parse_error else ""
+        tool_error = _format_tool_error(result)
         subtask = result.current_subtask or "-"
         vlm = "called" if result.vlm_called else "skipped"
         self._write(
             f"step {result.step_index}: subtask={subtask!r} "
-            f"tools=[{tools}] monitor={status} vlm={vlm}{complete}"
+            f"tools=[{tools}] monitor={status} vlm={vlm}{complete}{parse}{tool_error}"
         )
 
     def show_task_finished(self, summary: OnlineTaskSummary) -> None:
@@ -197,11 +199,12 @@ class TuiInteractionLayer:
         status = result.monitor_status.value if result.monitor_status else "-"
         complete = " complete" if result.task_complete else ""
         parse = f" parse_error={result.parse_error}" if result.parse_error else ""
+        tool_error = _format_tool_error(result)
         subtask = result.current_subtask or "-"
         vlm = "called" if result.vlm_called else "skipped"
         self._append(
             f"step {result.step_index}: subtask={subtask!r} "
-            f"tools=[{tools}] monitor={status} vlm={vlm}{complete}{parse}"
+            f"tools=[{tools}] monitor={status} vlm={vlm}{complete}{parse}{tool_error}"
         )
 
     def show_task_finished(self, summary: OnlineTaskSummary) -> None:
@@ -369,3 +372,14 @@ def _format_plan_update(
         marker = " <- current" if index == current_index else ""
         lines.append(f"  {index}. {subtask}{marker}")
     return "\n".join(lines), subtasks
+
+
+def _format_tool_error(result: AgenticStepResult) -> str:
+    for tool_result in result.tool_results:
+        if tool_result.ok:
+            continue
+        source = tool_result.tool_name
+        if tool_result.namespace:
+            source = f"{tool_result.namespace}.{source}"
+        return f" tool_error={source}: {tool_result.error}"
+    return ""

@@ -909,6 +909,10 @@ def _first_monitor_result(
         if not tool_result.ok:
             continue
         if _is_execute_result_value(tool_result, execute_tool_name):
+            if _is_valid_monitor_status(
+                tool_result.data.get("monitor_status") or tool_result.data.get("status")
+            ):
+                return tool_result
             continue
         if tool_result.tool_name == monitor_tool_name:
             return tool_result
@@ -941,7 +945,7 @@ def _execution_id(tool_result: ToolResult | None) -> str | None:
 def _monitor_status_from_result(tool_result: ToolResult | None) -> MonitorStatus | None:
     if tool_result is None or not tool_result.ok:
         return None
-    value = tool_result.data.get("status")
+    value = tool_result.data.get("monitor_status") or tool_result.data.get("status")
     if value is None:
         return None
     try:

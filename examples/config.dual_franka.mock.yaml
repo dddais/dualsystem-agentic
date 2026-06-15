@@ -65,6 +65,12 @@ mcp:
       args: ["mcp_server/dual_franka_mcp_server/server.py"]
       env:
         DUAL_FRANKA_BRIDGE_URL: http://localhost:8768
+        DUAL_FRANKA_FETCH_ENV_PATH: /environment
+        DUAL_FRANKA_MONITOR_PATH: /task/monitor
+        DUAL_FRANKA_EXECUTE_PATH: /task/execute
+        DUAL_FRANKA_STOP_PATH: /task/stop
+        DUAL_FRANKA_RESET_PATH: /task/reset
+        DUAL_FRANKA_ESTOP_PATH: /task/emergency_stop
 
 loop:
   max_steps: 12

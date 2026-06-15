@@ -1,29 +1,29 @@
 """
 dual_franka MCP Server (HTTP adapter)
 =====================================
-STDIO MCP server that exposes a dual-Franka robot bridge to the agentic loop.
+STDIO MCP server that exposes a dual-Franka robot runtime to the agentic loop.
 All robot operations are forwarded to HTTP endpoints:
 
 - ``fetch_env``  -> robot/environment state over HTTP
 - ``monitor``    -> subtask status over HTTP
 - ``execute``    -> subtask execution, followed by an automatic monitor call
-- controls/other -> stop/reset/emergency/raw bridge calls over HTTP
+- controls/other -> stop/reset/emergency/raw runtime calls over HTTP
 
 The VLM sees these tools through the project registry as
 ``dual_franka___<tool_name>`` when using ``examples/config.dual_franka.yaml``.
 
 Environment variables:
-    DUAL_FRANKA_BRIDGE_URL       Bridge base URL (default: http://localhost:8767)
+    DUAL_FRANKA_BRIDGE_URL       Runtime base URL (default: http://localhost:8767)
     DUAL_FRANKA_FETCH_ENV_PATH   Env/status path (default: /environment)
     DUAL_FRANKA_FETCH_ENV_METHOD Env/status method (default: GET)
-    DUAL_FRANKA_FETCH_ENV_HTTP   Set true to forward fetch_env to the bridge.
-    DUAL_FRANKA_MONITOR_PATH     Monitor path (default: /task/monitor)
+    DUAL_FRANKA_FETCH_ENV_HTTP   Set true to forward fetch_env to the runtime.
+    DUAL_FRANKA_MONITOR_PATH     Monitor path (default: /monitors/status)
     DUAL_FRANKA_MONITOR_METHOD   Monitor method (default: POST)
-    DUAL_FRANKA_EXECUTE_PATH     Execute path (default: /task/execute)
+    DUAL_FRANKA_EXECUTE_PATH     Execute path (default: /executions)
     DUAL_FRANKA_EXECUTE_METHOD   Execute method (default: POST)
-    DUAL_FRANKA_STOP_PATH        Stop path (default: /task/stop)
-    DUAL_FRANKA_RESET_PATH       Reset path (default: /task/reset)
-    DUAL_FRANKA_ESTOP_PATH       Emergency stop path (default: /task/emergency_stop)
+    DUAL_FRANKA_STOP_PATH        Stop path (default: /control/stop)
+    DUAL_FRANKA_RESET_PATH       Reset path (default: /control/reset)
+    DUAL_FRANKA_ESTOP_PATH       Emergency stop path (default: /control/emergency_stop)
     DUAL_FRANKA_TIMEOUT_S        HTTP timeout seconds (default: 30)
     DUAL_FRANKA_UNKNOWN_STATUS   Fallback monitor status (default: running)
 """
@@ -51,13 +51,13 @@ UNKNOWN_STATUS = os.environ.get("DUAL_FRANKA_UNKNOWN_STATUS") or "running"
 FETCH_ENV_PATH = os.environ.get("DUAL_FRANKA_FETCH_ENV_PATH") or "/environment"
 FETCH_ENV_METHOD = os.environ.get("DUAL_FRANKA_FETCH_ENV_METHOD") or "GET"
 FETCH_ENV_HTTP = (os.environ.get("DUAL_FRANKA_FETCH_ENV_HTTP") or "").lower() in {"1", "true", "yes", "on"}
-MONITOR_PATH = os.environ.get("DUAL_FRANKA_MONITOR_PATH") or "/task/monitor"
+MONITOR_PATH = os.environ.get("DUAL_FRANKA_MONITOR_PATH") or "/monitors/status"
 MONITOR_METHOD = os.environ.get("DUAL_FRANKA_MONITOR_METHOD") or "POST"
-EXECUTE_PATH = os.environ.get("DUAL_FRANKA_EXECUTE_PATH") or "/task/execute"
+EXECUTE_PATH = os.environ.get("DUAL_FRANKA_EXECUTE_PATH") or "/executions"
 EXECUTE_METHOD = os.environ.get("DUAL_FRANKA_EXECUTE_METHOD") or "POST"
-STOP_PATH = os.environ.get("DUAL_FRANKA_STOP_PATH") or "/task/stop"
-RESET_PATH = os.environ.get("DUAL_FRANKA_RESET_PATH") or "/task/reset"
-ESTOP_PATH = os.environ.get("DUAL_FRANKA_ESTOP_PATH") or "/task/emergency_stop"
+STOP_PATH = os.environ.get("DUAL_FRANKA_STOP_PATH") or "/control/stop"
+RESET_PATH = os.environ.get("DUAL_FRANKA_RESET_PATH") or "/control/reset"
+ESTOP_PATH = os.environ.get("DUAL_FRANKA_ESTOP_PATH") or "/control/emergency_stop"
 
 app = Server("dual_franka_mcp_server")
 
@@ -70,8 +70,9 @@ async def list_tools() -> list[types.Tool]:
             types.Tool(
                 name="fetch_env",
                 description=(
-                    "Fetch structured scene/environment state for the dual-Franka planner. "
-                    "Images are fetched separately by the configured HTTP DataLoader."
+                    "Fetch structured scene graph/state for the dual-Franka planner. "
+                    "Use only when a real structured scene provider is configured; "
+                    "images are already fetched separately by the HTTP DataLoader."
                 ),
                 inputSchema={
                     "type": "object",
@@ -79,7 +80,7 @@ async def list_tools() -> list[types.Tool]:
                     "properties": {
                         "include_status": {
                             "type": "boolean",
-                            "description": "Optional bridge hint to include robot status in the environment payload.",
+                            "description": "Optional runtime hint to include robot status in the environment payload.",
                         }
                     },
                 },
@@ -97,14 +98,16 @@ async def list_tools() -> list[types.Tool]:
                 "properties": {
                     "subtask": {"type": "string", "description": "Current subtask text for consistency checks."},
                     "subtask_index": {"type": "integer", "description": "0-based subtask index."},
-                    "task_id": {"type": "string", "description": "Optional robot-side task identifier."},
+                    "execution_id": {"type": "string", "description": "Optional runtime execution identifier."},
+                    "monitor_id": {"type": "string", "description": "Optional runtime monitor identifier."},
+                    "task_id": {"type": "string", "description": "Legacy robot-side task identifier."},
                 },
             },
         ),
         types.Tool(
             name="execute",
             description=(
-                "Execute one subtask on the dual-Franka HTTP bridge, then "
+                "Execute one subtask on the dual-Franka runtime, then "
                 "automatically trigger monitor for the same subtask."
             ),
             inputSchema={
@@ -116,11 +119,11 @@ async def list_tools() -> list[types.Tool]:
                     "left_arm": {"type": "string", "description": "Optional left-arm role/hint."},
                     "right_arm": {"type": "string", "description": "Optional right-arm role/hint."},
                     "bimanual_mode": {"type": "string", "description": "Optional bimanual coordination mode."},
-                    "metadata": {"type": "object", "description": "Optional metadata passed through to the bridge."},
-                    "options": {"type": "object", "description": "Optional execution options passed through to the bridge."},
+                    "metadata": {"type": "object", "description": "Optional metadata passed through to the runtime."},
+                    "options": {"type": "object", "description": "Optional execution options passed through to the runtime."},
                     "payload": {
                         "type": "object",
-                        "description": "Bridge-specific fields merged into the execute request, overriding defaults.",
+                        "description": "Runtime-specific fields merged into the execute request, overriding defaults.",
                     },
                 },
             },
@@ -137,13 +140,13 @@ async def list_tools() -> list[types.Tool]:
         ),
         types.Tool(
             name="emergency_stop",
-            description="Emergency stop the dual-Franka bridge over HTTP.",
+            description="Emergency stop the dual-Franka runtime over HTTP.",
             inputSchema={"type": "object", "required": [], "properties": {}},
         ),
         types.Tool(
             name="call_bridge",
             description=(
-                "Call another relative HTTP endpoint on the dual-Franka bridge. "
+                "Call another relative HTTP endpoint on the dual-Franka runtime. "
                 "Use for robot-specific utilities not modeled as standard tools."
             ),
             inputSchema={
@@ -226,7 +229,12 @@ async def _monitor(client: httpx.AsyncClient, arguments: dict) -> dict:
         "status": status,
         "subtask": data.get("subtask", arguments.get("subtask")),
         "subtask_index": data.get("subtask_index", arguments.get("subtask_index")),
+        "execution_id": data.get("execution_id", arguments.get("execution_id") or arguments.get("task_id")),
+        "monitor_id": data.get("monitor_id", arguments.get("monitor_id")),
         "task_id": data.get("task_id", arguments.get("task_id")),
+        "progress": data.get("progress"),
+        "updated_at": data.get("updated_at"),
+        "error": data.get("error"),
         "monitor": data,
     }
 
@@ -243,18 +251,40 @@ async def _execute(client: httpx.AsyncClient, arguments: dict) -> dict:
         json_data=request_payload if _method_has_body(EXECUTE_METHOD) else None,
         params=request_payload if not _method_has_body(EXECUTE_METHOD) else None,
     )
-    monitor_data = await _monitor(client, _build_execute_monitor_payload(arguments, str(subtask)))
+    if execute_data.get("executed") is False or _derive_monitor_status(execute_data) == "failed":
+        monitor_data = _monitor_data_from_failed_execute(arguments, str(subtask), execute_data)
+    else:
+        monitor_data = await _monitor(client, _build_execute_monitor_payload(arguments, str(subtask), execute_data))
     monitor_status = str(monitor_data.get("status") or "running")
+    execution_id = execute_data.get("execution_id") or execute_data.get("id") or execute_data.get("task_id")
+    monitor_id = execute_data.get("monitor_id") or monitor_data.get("monitor_id")
     return {
         "agentic_role": "execute",
         "executed": bool(execute_data.get("executed", True)),
         "subtask": subtask,
         "subtask_index": monitor_data.get("subtask_index", arguments.get("subtask_index")),
-        "task_id": monitor_data.get("task_id", arguments.get("task_id")),
+        "execution_id": execution_id,
+        "monitor_id": monitor_id,
+        "task_id": monitor_data.get("task_id", arguments.get("task_id")) or execution_id,
         "status": monitor_status,
         "monitor_status": monitor_status,
         "execute": execute_data,
         "monitor": monitor_data,
+    }
+
+
+def _monitor_data_from_failed_execute(arguments: dict, subtask: str, execute_data: dict) -> dict:
+    return {
+        "status": "failed",
+        "subtask": execute_data.get("subtask", subtask),
+        "subtask_index": execute_data.get("subtask_index", arguments.get("subtask_index")),
+        "execution_id": execute_data.get("execution_id") or execute_data.get("id") or arguments.get("execution_id"),
+        "monitor_id": execute_data.get("monitor_id") or arguments.get("monitor_id"),
+        "task_id": execute_data.get("task_id", arguments.get("task_id")),
+        "progress": execute_data.get("progress"),
+        "updated_at": execute_data.get("updated_at"),
+        "error": execute_data.get("error"),
+        "monitor": execute_data,
     }
 
 
@@ -282,12 +312,22 @@ def _build_execute_payload(arguments: dict) -> dict:
     return payload
 
 
-def _build_execute_monitor_payload(arguments: dict, subtask: str) -> dict:
+def _build_execute_monitor_payload(arguments: dict, subtask: str, execute_data: dict | None = None) -> dict:
     payload = {"subtask": subtask}
-    for key in ("subtask_index", "task_id"):
+    execute_data = execute_data or {}
+    for key in ("subtask_index", "task_id", "execution_id", "monitor_id"):
         value = arguments.get(key)
         if value is not None:
             payload[key] = value
+    for source_key, target_key in (
+        ("execution_id", "execution_id"),
+        ("id", "execution_id"),
+        ("task_id", "task_id"),
+        ("monitor_id", "monitor_id"),
+    ):
+        value = execute_data.get(source_key)
+        if value is not None and target_key not in payload:
+            payload[target_key] = value
     return payload
 
 
@@ -337,8 +377,14 @@ async def _request(
     method = method.upper()
     if method not in {"GET", "POST", "PUT", "PATCH", "DELETE"}:
         raise ValueError(f"unsupported HTTP method: {method}")
-    response = await client.request(method, _safe_relative_path(path), json=json_data, params=params)
-    response.raise_for_status()
+    safe_path = _safe_relative_path(path)
+    try:
+        response = await client.request(method, safe_path, json=json_data, params=params)
+        response.raise_for_status()
+    except httpx.HTTPStatusError as exc:
+        raise RuntimeError(_http_error_message(exc.response, method, safe_path)) from exc
+    except httpx.RequestError as exc:
+        raise RuntimeError(f"{method} {safe_path} request failed: {exc}") from exc
     if not response.content:
         return {}
     payload = response.json()
@@ -353,6 +399,37 @@ def _unwrap_bridge_response(payload: Any) -> dict:
             return payload["data"]
         return payload
     return {"data": payload}
+
+
+def _http_error_message(response: httpx.Response, method: str, path: str) -> str:
+    status_code = getattr(response, "status_code", "unknown")
+    url = str(getattr(response, "url", path))
+    detail = _response_error_detail(response)
+    message = f"{method} {url} returned HTTP {status_code}"
+    if detail:
+        message = f"{message}: {detail}"
+    return message
+
+
+def _response_error_detail(response: httpx.Response) -> str:
+    try:
+        payload = response.json()
+    except Exception:
+        text = getattr(response, "text", "") or ""
+        return text.strip()[:500]
+    if isinstance(payload, dict):
+        message = payload.get("message") or payload.get("error")
+        if message:
+            return str(message)
+        data = payload.get("data")
+        if isinstance(data, dict):
+            nested = data.get("message") or data.get("error")
+            if nested:
+                return str(nested)
+    try:
+        return json.dumps(payload, ensure_ascii=False)[:500]
+    except TypeError:
+        return str(payload)[:500]
 
 
 def _safe_relative_path(path: str) -> str:

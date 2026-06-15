@@ -42,7 +42,11 @@ dev = [
 dualsystem-agentic = "dualsystem_agentic.cli:main"
 
 [tool.setuptools.packages.find]
-where = ["src"]
+where = ["src", "."]
+include = ["dualsystem_agentic*", "robot_runtime*"]
+
+[tool.setuptools.package-data]
+"robot_runtime.configs" = ["*.yaml"]
 
 [tool.pytest.ini_options]
 addopts = "-q"

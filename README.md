@@ -159,10 +159,12 @@ For offline verification without any robot or network, use `mcp_server/mock_mcp_
 adapter, `mcp_server/x2robot_mcp_server/` bridges the loop to the x2robot bridge
 HTTP API (with a dependency-free mock bridge for local testing); see
 `examples/config.x2robot.yaml` and that server's README.
-For dual-Franka deployment, see `mcp_server/dual_franka_mcp_server/` and
-`examples/config.dual_franka.yaml`: images come from `HTTPDataLoader`, while
-`monitor`, `execute`, and extra robot controls are forwarded to the robot HTTP
-bridge by the MCP adapter.
+For dual-Franka runtime deployment, see `mcp_server/dual_franka_mcp_server/`,
+`robot_runtime/`, and `examples/config.dual_franka.runtime.yaml`: images come
+from `HTTPDataLoader` at `/observations/latest`, while `monitor`, `execute`, and
+extra robot controls are forwarded to the robot runtime by the MCP adapter.
+`examples/config.dual_franka.yaml` and `dual_franka_bridge.py` remain available
+for legacy bridge/debug deployments.
 
 For config-only smoke tests, `mcp.provider: fake` can declare in-process tools
 directly in YAML. This is useful for testing the online loop without the MCP SDK:
@@ -236,6 +238,7 @@ PYTHONPATH=src python examples/run_online_robot.py --config examples/config.mock
 # Real robot/simulator: switch only the config.
 PYTHONPATH=src python examples/run_online_robot.py --config examples/config.x2robot.yaml
 PYTHONPATH=src python examples/run_online_robot.py --config examples/config.dual_franka.yaml
+PYTHONPATH=src python examples/run_online_robot.py --config examples/config.dual_franka.runtime.yaml
 
 # Non-interactive debug tasks.
 PYTHONPATH=src python examples/run_online_robot.py \

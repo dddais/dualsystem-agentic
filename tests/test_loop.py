@@ -423,12 +423,18 @@ def test_tick_without_reason_skips_vlm_and_preserves_state():
     assert planner_calls == 0
 
 
-def test_execute_status_running_still_starts_monitor_once():
+def test_execute_status_running_reuses_initial_monitor_feedback():
     client = FakeMCPToolClient()
     monitor_calls = []
     client.register(
         "execute",
-        lambda args: {"executed": True, "status": "running", "subtask": args.get("subtask")},
+        lambda args: {
+            "executed": True,
+            "status": "running",
+            "subtask": args.get("subtask"),
+            "execution_id": "exec-1",
+            "monitor_id": "mon-1",
+        },
         namespace="demo_robot",
     )
     client.register(
@@ -453,9 +459,11 @@ def test_execute_status_running_still_starts_monitor_once():
     result, state = loop.step("task")
 
     assert result.parse_ok is True
-    assert [tool_result.tool_name for tool_result in result.tool_results] == ["execute", "monitor"]
-    assert monitor_calls == [{"subtask": "pick cup"}]
+    assert [tool_result.tool_name for tool_result in result.tool_results] == ["execute"]
+    assert monitor_calls == []
     assert state.active_execution is not None
+    assert state.active_execution.execution_id == "exec-1"
+    assert state.active_execution.monitor_id == "mon-1"
     assert state.active_execution.status == "running"
 
 

@@ -1,0 +1,17 @@
+robot:
+  type: dual_franka
+  driver: placeholder
+
+camera:
+  provider: local_files
+  image_dir: /tmp/img
+
+monitor:
+  provider: remote_http
+  url: http://192.168.120.140:8877
+  timeout: 30.0
+
+safety:
+  max_execution_s: 300
+  require_estop_ready: false
+

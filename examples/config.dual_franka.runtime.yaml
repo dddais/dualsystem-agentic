@@ -1,0 +1,69 @@
+# dual_franka runtime deployment config.
+# Robot side:
+#   python robot_runtime/api/app.py --config robot_runtime/configs/dual_franka.runtime.yaml --port 8767
+# Agent side:
+#   PYTHONPATH=src python examples/run_online_robot.py --config examples/config.dual_franka.runtime.yaml
+
+vlm:
+  provider: local_qwen
+  model_path: /home/ubuntu/dais/models/RoboBrain2.5-4B
+  model_family: qwen3
+  device: cuda:0
+  dtype: bf16
+  visual_scene_prepass: false
+  visual_scene_sampling_params:
+    do_sample: false
+    max_new_tokens: 256
+  sampling_params:
+    do_sample: false
+    temperature: 0.7
+    max_new_tokens: 512
+
+executor:
+  provider: noop
+
+mcp:
+  provider: sdk
+  servers:
+    - namespace: dual_franka
+      description: Dual-Franka runtime tools exposed as dual_franka___<tool_name>.
+      transport: stdio
+      command: python
+      args: ["mcp_server/dual_franka_mcp_server/server.py"]
+      env:
+        DUAL_FRANKA_BRIDGE_URL: http://192.168.120.143:8767
+        # Keep fetch_env hidden unless a real structured scene-graph provider is connected.
+        # Images already arrive through HTTPDataLoader; exposing fetch_env with only runtime
+        # bookkeeping can make the VLM repeatedly observe instead of executing.
+        # DUAL_FRANKA_FETCH_ENV_HTTP: "true"
+        DUAL_FRANKA_FETCH_ENV_PATH: /environment
+        DUAL_FRANKA_MONITOR_PATH: /monitors/status
+        DUAL_FRANKA_EXECUTE_PATH: /executions
+        DUAL_FRANKA_STOP_PATH: /control/stop
+        DUAL_FRANKA_RESET_PATH: /control/reset
+        DUAL_FRANKA_ESTOP_PATH: /control/emergency_stop
+        DUAL_FRANKA_TIMEOUT_S: 30.0
+        DUAL_FRANKA_UNKNOWN_STATUS: running
+
+loop:
+  max_steps: 20
+  reason_interval_s: 10.0
+  monitor_poll_interval_s: 1.0
+  max_monitor_polls: 300
+  include_metadata_in_prompt: false
+
+dataloader:
+  provider: http
+  url: http://192.168.120.143:8767/observations/latest
+  timeout: 10.0
+  image_key: concatenated_image
+  label: main
+
+interaction:
+  provider: console
+  show_raw_json: false
+
+logging:
+  enabled: true
+  root_dir: runs
+  save_images: true

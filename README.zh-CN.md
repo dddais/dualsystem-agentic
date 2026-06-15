@@ -142,9 +142,11 @@ loop:
 `mcp_server/x2robot_mcp_server/`，它把 loop 桥接到 x2robot 的 bridge HTTP API
 （并附带一个零依赖的 mock bridge 便于本地联调）；配置见
 `examples/config.x2robot.yaml` 及该 server 的 README。
-dual-Franka 真机部署见 `mcp_server/dual_franka_mcp_server/` 和
-`examples/config.dual_franka.yaml`：图像由 `HTTPDataLoader` 从 HTTP 获取，
-`monitor` / `execute` / 其它控制工具由 MCP adapter 转发到 HTTP bridge。
+dual-Franka runtime 部署见 `mcp_server/dual_franka_mcp_server/`、`robot_runtime/`
+和 `examples/config.dual_franka.runtime.yaml`：图像由 `HTTPDataLoader` 从
+`/observations/latest` 获取，`monitor` / `execute` / 其它控制工具由 MCP adapter
+转发到 robot runtime。`examples/config.dual_franka.yaml` 和 `dual_franka_bridge.py`
+仍保留给旧 bridge/debug 部署使用。
 
 仅做配置级冒烟测试时，也可以直接用 `mcp.provider: fake` 在 YAML 中声明进程内工具，
 不依赖 MCP SDK：
@@ -205,6 +207,7 @@ PYTHONPATH=src python examples/run_online_robot.py --config examples/config.mock
 # 真机/仿真：只切换配置。
 PYTHONPATH=src python examples/run_online_robot.py --config examples/config.x2robot.yaml
 PYTHONPATH=src python examples/run_online_robot.py --config examples/config.dual_franka.yaml
+PYTHONPATH=src python examples/run_online_robot.py --config examples/config.dual_franka.runtime.yaml
 
 # 非交互调试任务。
 PYTHONPATH=src python examples/run_online_robot.py \
