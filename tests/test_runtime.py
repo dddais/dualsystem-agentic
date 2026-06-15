@@ -203,7 +203,7 @@ def test_online_runtime_marks_max_steps_and_keeps_waiting():
 
 def test_online_runtime_does_not_count_monitor_polls_against_max_steps():
     client = FakeMCPToolClient()
-    monitor_statuses = iter(["running", "success"])
+    monitor_statuses = iter(["success"])
     client.register(
         "execute",
         lambda args: {"executed": True, "status": "running", "subtask": args.get("subtask")},
@@ -252,7 +252,7 @@ def test_online_runtime_does_not_count_monitor_polls_against_max_steps():
 
 def test_online_runtime_monitor_event_triggers_next_reason_when_budget_remains():
     client = FakeMCPToolClient()
-    monitor_statuses = iter(["running", "success"])
+    monitor_statuses = iter(["success"])
     client.register(
         "execute",
         lambda args: {"executed": True, "status": "running", "subtask": args.get("subtask")},

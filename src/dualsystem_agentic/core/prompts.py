@@ -43,6 +43,10 @@ Tool use:
   shown, and pass arguments that match the listed signature.
 - Any available tool may be called; newly exposed robot tools do not need a
   special config entry. Interpret their listed description and schema.
+- If an execute tool is available and there is a current executable subtask while
+  no Active execution is running, call that execute tool with the current subtask
+  to start robot motion. Do NOT keep returning empty "tool_calls" with
+  "should_execute": false for the same executable subtask.
 - Tools that report subtask status should return {"status": "running|success|failed"}.
   Tools that return scene state may return {"scene_graph": {...}},
   {"environment": {...}}, or {"env": {...}}. Tools that perform an action may
@@ -64,7 +68,7 @@ Respond with ONLY a JSON object, no extra prose:
 {
   "decision": "plan|execute|observe|wait|replan|cancel|complete|noop",
   "tool_calls": [
-    {"name": "<canonical tool name from the list>", "arguments": {}}
+    {"name": "<canonical execute tool name from the list>", "arguments": {"subtask": "<current_subtask>"}}
   ],
   "subtasks": ["<full ordered plan; required on the first step and whenever you revise it>"],
   "subtask_index": <0-based index of the current subtask within the plan>,

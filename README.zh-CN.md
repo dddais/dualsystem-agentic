@@ -28,10 +28,14 @@ MCP 协议**接入，不同机器人对应不同 MCP server；模块易于增删
 ## 安装
 
 ```bash
-pip install -e .                 # 核心（pyyaml, pillow）
-pip install -e ".[mcp]"          # + 真实 MCP 传输（官方 mcp SDK）
-pip install -e ".[local-qwen]"   # + 本地 Qwen2.5/3-VL 规划器
-pip install -e ".[dev]"          # + pytest
+pip install -e .                 # agent 核心（pyyaml, pillow）
+pip install -e ".[mcp]"          # agent + 真实 MCP 传输（官方 mcp SDK）
+pip install -e ".[local-qwen]"   # agent + 本地 Qwen2.5/3-VL 规划器
+pip install -e ".[dev]"          # agent 开发测试
+
+# 只在 robot machine 上安装 Dual-Franka runtime 服务。
+pip install -e ./robot_runtime
+robot-runtime --port 8767
 ```
 
 ## 模块结构
@@ -138,15 +142,13 @@ loop:
 接入真机时替换为你自己机器人的 MCP server 即可。
 
 离线验证（无需任何真机或网络）可用 `mcp_server/mock_mcp_server/`（进程内状态机，
-配置见 `examples/config.mock.yaml`）。更贴近真机的示例见
-`mcp_server/x2robot_mcp_server/`，它把 loop 桥接到 x2robot 的 bridge HTTP API
-（并附带一个零依赖的 mock bridge 便于本地联调）；配置见
+配置见 `examples/config.mock.yaml`）。x2robot 专用实验见
+`mcp_server/x2robot_mcp_server/`，它把 loop 桥接到 x2robot 的 HTTP API；配置见
 `examples/config.x2robot.yaml` 及该 server 的 README。
-dual-Franka runtime 部署见 `mcp_server/dual_franka_mcp_server/`、`robot_runtime/`
+dual-Franka 支持的部署路径是 `mcp_server/dual_franka_mcp_server/`、`robot_runtime/`
 和 `examples/config.dual_franka.runtime.yaml`：图像由 `HTTPDataLoader` 从
 `/observations/latest` 获取，`monitor` / `execute` / 其它控制工具由 MCP adapter
-转发到 robot runtime。`examples/config.dual_franka.yaml` 和 `dual_franka_bridge.py`
-仍保留给旧 bridge/debug 部署使用。
+转发到 robot runtime。
 
 仅做配置级冒烟测试时，也可以直接用 `mcp.provider: fake` 在 YAML 中声明进程内工具，
 不依赖 MCP SDK：
@@ -204,9 +206,8 @@ VLM、MCP、Executor、DataLoader，然后持续等待长程任务输入。每�
 # 离线 mock robot：scripted VLM + fake MCP + mock images。
 PYTHONPATH=src python examples/run_online_robot.py --config examples/config.mock.yaml
 
-# 真机/仿真：只切换配置。
+# 其它真机/仿真示例：只切换配置。
 PYTHONPATH=src python examples/run_online_robot.py --config examples/config.x2robot.yaml
-PYTHONPATH=src python examples/run_online_robot.py --config examples/config.dual_franka.yaml
 PYTHONPATH=src python examples/run_online_robot.py --config examples/config.dual_franka.runtime.yaml
 
 # 非交互调试任务。

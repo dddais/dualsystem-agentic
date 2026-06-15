@@ -177,7 +177,7 @@ def test_mcp_execute_skips_downstream_executor():
 
 def test_monitor_poll_updates_events_and_vlm_continues_reasoning_until_success():
     client = FakeMCPToolClient()
-    monitor_statuses = iter(["running", "success"])
+    monitor_statuses = iter(["success"])
     monitor_calls = []
     planner_inputs = []
     client.register(
@@ -240,7 +240,7 @@ def test_monitor_poll_updates_events_and_vlm_continues_reasoning_until_success()
     assert len(planner_inputs) == 3
     assert planner_inputs[-1].monitor_status is MonitorStatus.SUCCESS
     assert planner_inputs[-1].events[-1].event_type == "monitor_success"
-    assert monitor_calls == [{"subtask": "pick cup"}, {"subtask": "pick cup"}]
+    assert monitor_calls == [{"subtask": "pick cup"}]
 
 
 def test_monitor_failure_event_returns_control_to_planner():
@@ -396,6 +396,39 @@ def test_wait_decision_during_active_execution_does_not_execute_again():
     assert executor.calls == []
     assert state.active_execution is not None
     assert state.active_execution.status == "running"
+
+
+def test_repeated_plan_without_execute_is_rejected_after_plan_exists():
+    planner = _planner(
+        [
+            json.dumps(
+                {
+                    "decision": "plan",
+                    "tool_calls": [],
+                    "subtasks": ["pick cup"],
+                    "subtask_index": 0,
+                    "current_subtask": "pick cup",
+                    "should_execute": False,
+                }
+            )
+        ]
+    )
+    state = AgenticSessionState(
+        task="task",
+        subtasks=["pick cup"],
+        current_subtask="pick cup",
+        subtask_index=0,
+    )
+    executor = RecordingExecutor()
+    loop = AgenticRobotLoop(planner, _tool_client(), executor)
+
+    result, state = loop.step("task", state, reason_interval_s=0)
+
+    assert result.parse_ok is False
+    assert "returned no tool_calls" in (result.parse_error or "")
+    assert result.events[-1].event_type == "planner_noop"
+    assert state.reason_requested is True
+    assert executor.calls == []
 
 
 def test_tick_without_reason_skips_vlm_and_preserves_state():

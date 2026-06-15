@@ -12,15 +12,12 @@ AgenticRobotLoop
 Recommended robot-side entrypoint:
 
 ```bash
-python robot_runtime/api/app.py \
-  --config robot_runtime/configs/dual_franka.runtime.yaml \
-  --port 8767
+robot-runtime --port 8767
 ```
 
 The runtime owns `execution_id` / `monitor_id`, latest observations, monitor
-state, and robot control placeholders. `dual_franka_bridge.py` is still kept as
-a legacy compatibility/debug bridge for `/tmp/subtask.txt`,
-`/tmp/monitor_result.txt`, and `/tmp/img` based deployments.
+state, and robot control placeholders. The old file-based Dual-Franka bridge has
+been removed; this adapter targets the runtime API only.
 
 ## Tools
 
@@ -32,18 +29,18 @@ a legacy compatibility/debug bridge for `/tmp/subtask.txt`,
 | `stop_task` | `POST /control/stop` | stop |
 | `reset_task` | `POST /control/reset` | reset |
 | `emergency_stop` | `POST /control/emergency_stop` | emergency stop |
-| `call_bridge` | configurable relative path | extra robot-specific runtime HTTP calls |
 
 The project exposes these to the VLM as canonical names such as
 `dual_franka___execute`.
 
 ## Configuration
 
-Set these in `examples/config.dual_franka.yaml` under the MCP server `env` block:
+Set these in `examples/config.dual_franka.runtime.yaml` under the MCP server
+`env` block:
 
 | Variable | Default |
 |----------|---------|
-| `DUAL_FRANKA_BRIDGE_URL` | `http://localhost:8767` |
+| `DUAL_FRANKA_RUNTIME_URL` | `http://localhost:8767` |
 | `DUAL_FRANKA_FETCH_ENV_PATH` | `/environment` |
 | `DUAL_FRANKA_FETCH_ENV_HTTP` | unset / false |
 | `DUAL_FRANKA_MONITOR_PATH` | `/monitors/status` |
@@ -64,19 +61,30 @@ dataloader:
 ```
 
 `fetch_env` is intentionally hidden unless `DUAL_FRANKA_FETCH_ENV_HTTP=true` is
-set. This keeps local VLMs from repeatedly calling an empty scene-state tool, and
-keeps bridge bookkeeping such as camera file paths and last monitor requests out
-of the planner's structured scene state until a real scene-graph/environment
-provider is implemented. If `_fetch_env` is called directly while the HTTP
-provider is disabled, it returns `{"environment": {}}` as a compatibility
-placeholder.
+set. This keeps local VLMs from repeatedly calling an empty scene-state tool
+until a real scene-graph/environment provider is implemented. If `_fetch_env` is
+called directly while the HTTP provider is disabled, it returns
+`{"environment": {}}` as a compatibility placeholder.
+
+## Adding or removing tools
+
+The VLM-visible tool catalog comes from `list_tools()` in `server.py`; the agent
+registry and prompt are populated from MCP `list_tools` automatically.
+
+For an adapter-only change, add or remove the `types.Tool` entry in `list_tools()`
+and the matching branch in `_dispatch()`. If the tool only needs a different
+runtime path, prefer an env variable such as `DUAL_FRANKA_RESET_PATH` over code
+changes.
+
+For a robot-side action, also add the HTTP endpoint in `robot_runtime.api.app`,
+wire it through `RobotRuntime`, and implement the behavior in the selected
+`RobotDriver` adapter. Delete tools by removing them from `list_tools()` first;
+once absent from that catalog, the VLM will no longer see them.
 
 ## Local smoke test
 
 ```bash
-python robot_runtime/api/app.py \
-  --config robot_runtime/configs/dual_franka.runtime.yaml \
-  --port 8767
+robot-runtime --port 8767
 
 PYTHONPATH=src python examples/run_online_robot.py \
   --config examples/config.dual_franka.runtime.yaml \
@@ -84,8 +92,5 @@ PYTHONPATH=src python examples/run_online_robot.py \
   --print-components
 ```
 
-For real hardware, replace `DUAL_FRANKA_BRIDGE_URL` and `dataloader.url` with the
+For real hardware, set `DUAL_FRANKA_RUNTIME_URL` and `dataloader.url` to the
 robot runtime host.
-
-`mock_dual_franka_bridge.py` is still available for a fully self-contained smoke
-test that does not require image files or a monitor process.

@@ -1,8 +1,9 @@
 # dual_franka runtime deployment config.
 # Robot side:
-#   python robot_runtime/api/app.py --config robot_runtime/configs/dual_franka.runtime.yaml --port 8767
+#   robot-runtime --port 8767
 # Agent side:
 #   PYTHONPATH=src python examples/run_online_robot.py --config examples/config.dual_franka.runtime.yaml
+
 
 vlm:
   provider: local_qwen
@@ -31,12 +32,12 @@ mcp:
       command: python
       args: ["mcp_server/dual_franka_mcp_server/server.py"]
       env:
-        DUAL_FRANKA_BRIDGE_URL: http://192.168.120.143:8767
+        DUAL_FRANKA_RUNTIME_URL: http://192.168.120.143:8767
         # Keep fetch_env hidden unless a real structured scene-graph provider is connected.
         # Images already arrive through HTTPDataLoader; exposing fetch_env with only runtime
         # bookkeeping can make the VLM repeatedly observe instead of executing.
         # DUAL_FRANKA_FETCH_ENV_HTTP: "true"
-        DUAL_FRANKA_FETCH_ENV_PATH: /environment
+        # DUAL_FRANKA_FETCH_ENV_PATH: /environment
         DUAL_FRANKA_MONITOR_PATH: /monitors/status
         DUAL_FRANKA_EXECUTE_PATH: /executions
         DUAL_FRANKA_STOP_PATH: /control/stop

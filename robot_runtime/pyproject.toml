@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "dualsystem-robot-runtime"
+version = "0.1.0"
+description = "Robot-side runtime service for dualsystem-agentic deployments"
+readme = "README.md"
+requires-python = ">=3.10"
+license = {text = "Apache-2.0"}
+authors = [{name = "Dual-System Agentic Contributors"}]
+dependencies = [
+    "fastapi",
+    "pyyaml",
+    "uvicorn",
+]
+
+[project.scripts]
+robot-runtime = "robot_runtime.api.app:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["robot_runtime*"]
+
+[tool.setuptools.package-data]
+"robot_runtime.configs" = ["*.yaml"]

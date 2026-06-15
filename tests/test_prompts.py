@@ -41,6 +41,8 @@ def test_prompt_describes_async_execute_monitor_contract():
     assert "Executable subtask constraints:" in prompt
     assert "concrete physical robot action" in prompt
     assert "Do NOT create subtasks for checking status" in prompt
+    assert "call that execute tool with the current subtask" in prompt
+    assert "Do NOT keep returning empty \"tool_calls\"" in prompt
     assert "Pick up the pink cup and place it in the dish rack." in prompt
     assert "Analyze the image to identify all items." in prompt
     assert "If Active execution is running" in prompt

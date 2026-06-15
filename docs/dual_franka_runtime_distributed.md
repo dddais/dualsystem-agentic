@@ -14,7 +14,7 @@ Agent Machine
         | HTTP tools
         v
 Robot Machine
-  robot_runtime/api/app.py
+  robot-runtime
   RobotRuntime
     - ExecutionStore / MonitorStore
     - RobotDriver
@@ -40,7 +40,20 @@ Monitor Machine
 | MonitorProvider | 本地 monitor 或远端 monitor service 的统一适配层 |
 | Robo-Dopamine monitor service | 分布式 monitor contract skeleton；后续可接真实 GRM worker |
 
-旧的 `dual_franka_bridge.py` 仍保留给兼容/debug 使用，但推荐真机入口已经变为 `robot_runtime/api/app.py`。
+旧的文件式 `dual_franka_bridge.py` 已移除；Dual-Franka 真机入口统一为独立安装的 `robot-runtime`。
+
+`robot_runtime/` 现在可以从 `dualsystem-agentic` 仓库中单独拿出去维护。只要保留其
+`pyproject.toml`、`robot_runtime/` 包目录和默认配置文件，robot machine 上就可以独立安装：
+
+```bash
+cd /path/to/robot_runtime
+pip install -e .
+robot-runtime --host 0.0.0.0 --port 8767
+```
+
+Agent 仓库不需要 import `robot_runtime`；它只需要通过
+`DUAL_FRANKA_RUNTIME_URL=http://ROBOT_MACHINE_IP:8767` 访问 HTTP API。因此两边可以分开
+部署、分开升级，但 API contract 需要保持兼容。
 
 ## 2. API 与数据流
 
@@ -67,6 +80,16 @@ monitor polling:
   <- running | success | failed
 ```
 
+这里有两层协议：
+
+- Agent loop 和 `dual_franka_mcp_server/server.py` 之间是 MCP stdio。
+- `dual_franka_mcp_server/server.py` 和 `robot-runtime` 之间是 HTTP。
+
+例如 VLM 调用 `dual_franka___reset_task` 时，MCP adapter 收到的是 MCP tool call；
+adapter 内部再用 `httpx.AsyncClient(base_url=DUAL_FRANKA_RUNTIME_URL)` 发出
+`POST /control/reset`。Robot Runtime 的 FastAPI endpoint 接到请求后调用
+`RobotRuntime.reset()`，再进入当前配置的 `RobotDriver.reset()`。
+
 Runtime 标准接口：
 
 | Method | Path | 用途 |
@@ -83,7 +106,45 @@ Runtime 标准接口：
 | `POST` | `/control/reset` | reset |
 | `POST` | `/control/emergency_stop` | 急停 |
 
-### 2.2 图像数据流
+### 2.2 MCP tools 增删方法
+
+Dual-Franka tools 的 VLM 可见列表来自 MCP adapter 的 `list_tools()`。Agent 启动后会通过
+MCP `list_tools` 自动把这些 tool 放进 registry 和 prompt；一般不需要在 agent loop 里写
+per-tool 分支。
+
+只改 MCP 层、无需 robot 侧新行为时：
+
+1. 在 `mcp_server/dual_franka_mcp_server/server.py` 的 `list_tools()` 增删
+   `types.Tool`，包括 tool 名、描述和 `inputSchema`。
+2. 在同文件 `_dispatch()` 增删对应分支。
+3. 如果只是改 HTTP path，优先通过 env 配置，例如 `DUAL_FRANKA_RESET_PATH`；
+   不需要改代码。
+4. 加或更新 `tests/test_dual_franka.py`，确认 `list_tools()` 和 dispatch 行为符合预期。
+
+如果 tool 需要 robot runtime 执行新动作，还要同步扩展 runtime：
+
+1. 在 `robot_runtime/robot_runtime/api/app.py` 增加 HTTP endpoint。
+2. 在 `robot_runtime/robot_runtime/core/runtime.py` 的 `RobotRuntime` 中增加方法，
+   或复用已有的 `execute` / `stop` / `reset` / `emergency_stop`。
+3. 如果需要真实机器人动作，在对应 `RobotDriver` adapter 中实现方法。
+4. 更新 runtime 测试，再用 `curl` 先直接验证 runtime endpoint，最后验证 MCP tool call。
+
+删除 tool 的最小改动是从 `list_tools()` 移除它，并移除 `_dispatch()` 分支。这样 VLM 不会再
+在 prompt 里看到该 tool；如果 runtime endpoint 也不再需要，可以随后删除对应 HTTP endpoint
+和 driver 方法。
+
+标准控制 tool 目前是固定语义：
+
+| MCP tool | HTTP request | Runtime path |
+|----------|--------------|--------------|
+| `execute` | `POST /executions` 后自动 `POST /monitors/status` | `RobotRuntime.create_execution()` |
+| `monitor` | `POST /monitors/status` | `RobotRuntime.monitor_status()` |
+| `stop_task` | `POST /control/stop` | `RobotRuntime.stop()` |
+| `reset_task` | `POST /control/reset` | `RobotRuntime.reset()` |
+| `emergency_stop` | `POST /control/emergency_stop` | `RobotRuntime.emergency_stop()` |
+| `fetch_env` | 默认隐藏；开启后请求 `/environment` | `RobotRuntime.environment()` |
+
+### 2.3 图像数据流
 
 ```text
 Robot cameras / image producer
@@ -140,7 +201,7 @@ curl http://ROBOT_MACHINE_IP:8767/observations/latest/cam_right_wrist.jpg --outp
 }
 ```
 
-### 2.3 分布式 monitor 数据流
+### 2.4 分布式 monitor 数据流
 
 远端 monitor 模式下：
 
@@ -188,9 +249,7 @@ GET  /health
 ```bash
 cd /home/ubuntu/dais/dualsystem-agentic
 
-python robot_runtime/api/app.py \
-  --config robot_runtime/configs/dual_franka.runtime.yaml \
-  --port 8767
+robot-runtime --port 8767
 ```
 
 当前默认 runtime 配置：
@@ -233,7 +292,7 @@ mcp:
     - namespace: dual_franka
       args: ["mcp_server/dual_franka_mcp_server/server.py"]
       env:
-        DUAL_FRANKA_BRIDGE_URL: http://localhost:8767
+        DUAL_FRANKA_RUNTIME_URL: http://localhost:8767
         # 默认不要开启 fetch_env；图像已经由 dataloader 注入。
         # 只有接入真实结构化 scene graph provider 后再打开。
         # DUAL_FRANKA_FETCH_ENV_HTTP: "true"
@@ -255,7 +314,7 @@ agent-machine:
   dual_franka_mcp_server/server.py
 
 robot-machine:
-  robot_runtime/api/app.py
+  robot-runtime
   robot control / cameras / image producer
 
 monitor-machine:
@@ -291,8 +350,7 @@ safety:
 ```bash
 cd /home/ubuntu/dais/dualsystem-agentic
 
-python robot_runtime/api/app.py \
-  --config robot_runtime/configs/dual_franka.runtime.yaml \
+robot-runtime \
   --host 0.0.0.0 \
   --port 8767
 ```
@@ -369,11 +427,11 @@ mcp:
   servers:
     - namespace: dual_franka
       env:
-        DUAL_FRANKA_BRIDGE_URL: http://ROBOT_MACHINE_IP:8767
+        DUAL_FRANKA_RUNTIME_URL: http://ROBOT_MACHINE_IP:8767
         # 默认不要开启 fetch_env；图像已经由 dataloader 注入。
         # 只有接入真实结构化 scene graph provider 后再打开。
         # DUAL_FRANKA_FETCH_ENV_HTTP: "true"
-        DUAL_FRANKA_FETCH_ENV_PATH: /environment
+        # DUAL_FRANKA_FETCH_ENV_PATH: /environment
         DUAL_FRANKA_MONITOR_PATH: /monitors/status
         DUAL_FRANKA_EXECUTE_PATH: /executions
         DUAL_FRANKA_STOP_PATH: /control/stop
@@ -455,7 +513,7 @@ PYTHONPATH=src python examples/run_online_robot.py \
 
 - `mcp_client` 正常启动。
 - `dataloader` 是 `HTTPDataLoader`。
-- `DUAL_FRANKA_BRIDGE_URL` 指向 robot runtime。
+- `DUAL_FRANKA_RUNTIME_URL` 指向 robot runtime。
 - dataloader URL 指向 `/observations/latest`。
 
 ### 5.4 常见报错：`dual_franka.execute` 指向 `/monitors/status`
@@ -589,17 +647,17 @@ monitor id 查询 runtime。
 后续接真实机器人时，优先替换：
 
 ```text
-robot_runtime/adapters/dual_franka/robot_driver.py
-robot_runtime/adapters/dual_franka/camera_provider.py
-robot_runtime/adapters/dual_franka/monitor_provider.py
+robot_runtime/robot_runtime/adapters/dual_franka/robot_driver.py
+robot_runtime/robot_runtime/adapters/dual_franka/camera_provider.py
+robot_runtime/robot_runtime/adapters/dual_franka/monitor_provider.py
 ```
 
 换另一种机器人时，新增对应 adapter，例如：
 
 ```text
-robot_runtime/adapters/<new_robot>/robot_driver.py
-robot_runtime/adapters/<new_robot>/camera_provider.py
-robot_runtime/configs/<new_robot>.runtime.yaml
+robot_runtime/robot_runtime/adapters/<new_robot>/robot_driver.py
+robot_runtime/robot_runtime/adapters/<new_robot>/camera_provider.py
+robot_runtime/robot_runtime/configs/<new_robot>.runtime.yaml
 ```
 
 Agent loop、MCP tool 语义和 monitor 状态协议保持不变。

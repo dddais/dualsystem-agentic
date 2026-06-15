@@ -1,19 +1,19 @@
 """
-dual_franka MCP Server (HTTP adapter)
-=====================================
-STDIO MCP server that exposes a dual-Franka robot runtime to the agentic loop.
-All robot operations are forwarded to HTTP endpoints:
+dual_franka MCP Server (runtime HTTP adapter)
+=============================================
+STDIO MCP server that exposes the Dual-Franka Robot Runtime to the agentic loop.
+All robot operations are forwarded to the runtime HTTP API:
 
 - ``fetch_env``  -> robot/environment state over HTTP
 - ``monitor``    -> subtask status over HTTP
 - ``execute``    -> subtask execution, followed by an automatic monitor call
-- controls/other -> stop/reset/emergency/raw runtime calls over HTTP
+- controls    -> stop/reset/emergency runtime calls over HTTP
 
 The VLM sees these tools through the project registry as
-``dual_franka___<tool_name>`` when using ``examples/config.dual_franka.yaml``.
+``dual_franka___<tool_name>`` when using ``examples/config.dual_franka.runtime.yaml``.
 
 Environment variables:
-    DUAL_FRANKA_BRIDGE_URL       Runtime base URL (default: http://localhost:8767)
+    DUAL_FRANKA_RUNTIME_URL      Runtime base URL (default: http://localhost:8767)
     DUAL_FRANKA_FETCH_ENV_PATH   Env/status path (default: /environment)
     DUAL_FRANKA_FETCH_ENV_METHOD Env/status method (default: GET)
     DUAL_FRANKA_FETCH_ENV_HTTP   Set true to forward fetch_env to the runtime.
@@ -44,7 +44,7 @@ from mcp.server.stdio import stdio_server
 
 logger = logging.getLogger(__name__)
 
-BRIDGE_BASE_URL = os.environ.get("DUAL_FRANKA_BRIDGE_URL") or "http://localhost:8767"
+RUNTIME_BASE_URL = os.environ.get("DUAL_FRANKA_RUNTIME_URL") or "http://localhost:8767"
 REQUEST_TIMEOUT_S = float(os.environ.get("DUAL_FRANKA_TIMEOUT_S") or 30.0)
 UNKNOWN_STATUS = os.environ.get("DUAL_FRANKA_UNKNOWN_STATUS") or "running"
 
@@ -135,32 +135,15 @@ async def list_tools() -> list[types.Tool]:
             description="Stop the current dual-Franka task over HTTP.",
             inputSchema={"type": "object", "required": [], "properties": {}},
         ),
-        types.Tool(
-            name="reset_task",
-            description="Reset dual-Franka task/arms over HTTP.",
-            inputSchema={"type": "object", "required": [], "properties": {}},
-        ),
+        # types.Tool(
+        #     name="reset_task",
+        #     description="Reset dual-Franka task/arms over HTTP.",
+        #     inputSchema={"type": "object", "required": [], "properties": {}},
+        # ),
         types.Tool(
             name="emergency_stop",
             description="Emergency stop the dual-Franka runtime over HTTP.",
             inputSchema={"type": "object", "required": [], "properties": {}},
-        ),
-        types.Tool(
-            name="call_bridge",
-            description=(
-                "Call another relative HTTP endpoint on the dual-Franka runtime. "
-                "Use for robot-specific utilities not modeled as standard tools."
-            ),
-            inputSchema={
-                "type": "object",
-                "required": ["method", "path"],
-                "properties": {
-                    "method": {"type": "string", "description": "HTTP method: GET, POST, PUT, PATCH, DELETE."},
-                    "path": {"type": "string", "description": "Relative bridge path, e.g. /gripper/open."},
-                    "body": {"type": "object", "description": "Optional JSON request body."},
-                    "query": {"type": "object", "description": "Optional query parameters."},
-                },
-            },
         ),
         ]
     )
@@ -170,7 +153,7 @@ async def list_tools() -> list[types.Tool]:
 @app.call_tool()
 async def call_tool(name: str, arguments: dict) -> list[types.TextContent]:
     async with httpx.AsyncClient(
-        base_url=BRIDGE_BASE_URL,
+        base_url=RUNTIME_BASE_URL,
         timeout=httpx.Timeout(REQUEST_TIMEOUT_S),
         headers={"Content-Type": "application/json"},
     ) as client:
@@ -191,8 +174,6 @@ async def _dispatch(client: httpx.AsyncClient, name: str, arguments: dict) -> di
         return await _request(client, "POST", RESET_PATH)
     if name == "emergency_stop":
         return await _request(client, "POST", ESTOP_PATH)
-    if name == "call_bridge":
-        return await _call_bridge(client, arguments)
     raise ValueError(f"unknown tool: {name}")
 
 
@@ -322,14 +303,6 @@ def _hydrate_monitor_arguments(arguments: dict) -> dict:
     return payload
 
 
-async def _call_bridge(client: httpx.AsyncClient, arguments: dict) -> dict:
-    method = str(arguments.get("method") or "").upper()
-    path = _safe_relative_path(str(arguments.get("path") or ""))
-    body = arguments.get("body") if isinstance(arguments.get("body"), dict) else None
-    query = arguments.get("query") if isinstance(arguments.get("query"), dict) else None
-    return await _request(client, method, path, json_data=body, params=query)
-
-
 def _build_execute_payload(arguments: dict) -> dict:
     subtask = arguments["subtask"]
     payload = {
@@ -422,13 +395,13 @@ async def _request(
     if not response.content:
         return {}
     payload = response.json()
-    return _unwrap_bridge_response(payload)
+    return _unwrap_runtime_response(payload)
 
 
-def _unwrap_bridge_response(payload: Any) -> dict:
+def _unwrap_runtime_response(payload: Any) -> dict:
     if isinstance(payload, dict):
         if payload.get("success") is False or payload.get("ok") is False:
-            raise RuntimeError(str(payload.get("message") or payload.get("error") or "bridge request failed"))
+            raise RuntimeError(str(payload.get("message") or payload.get("error") or "runtime request failed"))
         if "data" in payload and isinstance(payload["data"], dict):
             return payload["data"]
         return payload
@@ -468,7 +441,7 @@ def _response_error_detail(response: httpx.Response) -> str:
 
 def _safe_relative_path(path: str) -> str:
     if "://" in path or not path.startswith("/") or ".." in path.split("/"):
-        raise ValueError(f"bridge path must be a safe relative path starting with '/': {path!r}")
+        raise ValueError(f"runtime path must be a safe relative path starting with '/': {path!r}")
     return path
 
 

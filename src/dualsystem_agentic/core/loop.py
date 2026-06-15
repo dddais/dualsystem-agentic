@@ -211,11 +211,29 @@ class AgenticRobotLoop:
             state.active_execution,
             self.execute_tool_name,
         )
+        blocked_noop = _blocked_executable_noop(
+            state=state,
+            planner_output=planner_output,
+            current_subtask=current_subtask,
+        )
         if blocked_execute is not None:
             parse_ok = False
             parse_error = blocked_execute
             state.phase = AgenticPhase.ERROR
             state.reason_requested = True
+        elif blocked_noop is not None:
+            parse_ok = False
+            parse_error = blocked_noop
+            state.phase = AgenticPhase.ERROR
+            _queue_event_if_reasonable(
+                state,
+                _event(
+                    "planner_noop",
+                    {"error": blocked_noop, "subtask": current_subtask},
+                    source="planner",
+                ),
+                events=produced_events,
+            )
         elif parse_ok:
             state.phase = AgenticPhase.ACT if planner_output.tool_calls else AgenticPhase.RESPONSE
             tool_results = [
@@ -1008,6 +1026,31 @@ def _is_execute_call(tool_call: ToolCall, execute_tool_name: str) -> bool:
         return True
     role = _optional_str(tool_call.arguments.get("agentic_role") or tool_call.arguments.get("_agentic_role"))
     return role is not None and role.lower() in {"execute", "action"}
+
+
+def _blocked_executable_noop(
+    *,
+    state: AgenticSessionState,
+    planner_output: AgenticPlannerOutput,
+    current_subtask: str | None,
+) -> str | None:
+    if (
+        not planner_output.parse_ok
+        or planner_output.task_complete
+        or planner_output.tool_calls
+        or planner_output.should_execute
+        or not current_subtask
+        or _active_execution_running(state.active_execution)
+        or not state.subtasks
+    ):
+        return None
+    if planner_output.subtasks and planner_output.subtasks != state.subtasks:
+        return None
+    return (
+        "planner selected an executable current_subtask but returned no tool_calls "
+        "and should_execute=false; call the available execute tool, set should_execute=true, "
+        "revise the plan, or complete/abort"
+    )
 
 
 def _hydrate_monitor_tool_calls(

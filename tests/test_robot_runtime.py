@@ -36,7 +36,7 @@ def _load_api_module():
         import yaml  # noqa: F401
     except ImportError:
         pytest.skip("fastapi/yaml is not installed")
-    path = Path(__file__).resolve().parents[1] / "robot_runtime/api/app.py"
+    path = Path(__file__).resolve().parents[1] / "robot_runtime/robot_runtime/api/app.py"
     spec = importlib.util.spec_from_file_location("robot_runtime_api_for_test", path)
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)

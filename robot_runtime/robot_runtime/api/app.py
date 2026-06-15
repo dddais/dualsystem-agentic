@@ -200,9 +200,13 @@ def _fail(message: str, *, status: int) -> JSONResponse:
     return JSONResponse({"success": False, "data": None, "message": message}, status_code=status)
 
 
+def _default_config_path() -> str:
+    return str(Path(__file__).resolve().parents[1] / "configs" / "dual_franka.runtime.yaml")
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Robot Runtime API server")
-    parser.add_argument("--config", default="robot_runtime/configs/dual_franka.runtime.yaml")
+    parser.add_argument("--config", default=_default_config_path())
     parser.add_argument("--host", default="0.0.0.0")
     parser.add_argument("--port", type=int, default=8767)
     args = parser.parse_args(argv)

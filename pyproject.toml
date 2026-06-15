@@ -26,6 +26,8 @@ dependencies = [
 mcp = [
     "mcp",
     "httpx",
+]
+x2robot-bridge = [
     "fastapi",
     "uvicorn",
 ]
@@ -42,13 +44,10 @@ dev = [
 dualsystem-agentic = "dualsystem_agentic.cli:main"
 
 [tool.setuptools.packages.find]
-where = ["src", "."]
-include = ["dualsystem_agentic*", "robot_runtime*"]
-
-[tool.setuptools.package-data]
-"robot_runtime.configs" = ["*.yaml"]
+where = ["src"]
+include = ["dualsystem_agentic*"]
 
 [tool.pytest.ini_options]
 addopts = "-q"
-pythonpath = ["src"]
+pythonpath = ["src", "robot_runtime"]
 testpaths = ["tests"]

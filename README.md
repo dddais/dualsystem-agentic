@@ -35,10 +35,14 @@ robots map to different MCP servers; modules are easy to add or remove.
 ## Install
 
 ```bash
-pip install -e .                 # core (pyyaml, pillow)
-pip install -e ".[mcp]"          # + real MCP transport (official mcp SDK)
-pip install -e ".[local-qwen]"   # + local Qwen2.5/3-VL planner
-pip install -e ".[dev]"          # + pytest
+pip install -e .                 # agent core (pyyaml, pillow)
+pip install -e ".[mcp]"          # agent + real MCP transport (official mcp SDK)
+pip install -e ".[local-qwen]"   # agent + local Qwen2.5/3-VL planner
+pip install -e ".[dev]"          # agent dev tests
+
+# Robot machine only, for the Dual-Franka runtime service.
+pip install -e ./robot_runtime
+robot-runtime --port 8767
 ```
 
 ## Layout
@@ -155,16 +159,13 @@ MCP `list_tools()`:
 a real MCP transport. Replace it with your robot's own MCP server.
 
 For offline verification without any robot or network, use `mcp_server/mock_mcp_server/`
-(in-memory state machine, see `examples/config.mock.yaml`). For a more realistic
-adapter, `mcp_server/x2robot_mcp_server/` bridges the loop to the x2robot bridge
-HTTP API (with a dependency-free mock bridge for local testing); see
-`examples/config.x2robot.yaml` and that server's README.
-For dual-Franka runtime deployment, see `mcp_server/dual_franka_mcp_server/`,
-`robot_runtime/`, and `examples/config.dual_franka.runtime.yaml`: images come
-from `HTTPDataLoader` at `/observations/latest`, while `monitor`, `execute`, and
-extra robot controls are forwarded to the robot runtime by the MCP adapter.
-`examples/config.dual_franka.yaml` and `dual_franka_bridge.py` remain available
-for legacy bridge/debug deployments.
+(in-memory state machine, see `examples/config.mock.yaml`). For x2robot-specific
+experiments, `mcp_server/x2robot_mcp_server/` bridges the loop to the x2robot HTTP
+API; see `examples/config.x2robot.yaml` and that server's README.
+For the supported dual-Franka deployment, see `mcp_server/dual_franka_mcp_server/`,
+`robot_runtime/`, and `examples/config.dual_franka.runtime.yaml`: images come from
+`HTTPDataLoader` at `/observations/latest`, while `monitor`, `execute`, and robot
+controls are forwarded to the robot runtime by the MCP adapter.
 
 For config-only smoke tests, `mcp.provider: fake` can declare in-process tools
 directly in YAML. This is useful for testing the online loop without the MCP SDK:
@@ -235,9 +236,8 @@ during a task, the process returns to the prompt. Use `/quit` or `/exit` to stop
 # Offline mock robot: scripted VLM + fake MCP + mock images.
 PYTHONPATH=src python examples/run_online_robot.py --config examples/config.mock.yaml
 
-# Real robot/simulator: switch only the config.
+# Other robot/simulator examples: switch only the config.
 PYTHONPATH=src python examples/run_online_robot.py --config examples/config.x2robot.yaml
-PYTHONPATH=src python examples/run_online_robot.py --config examples/config.dual_franka.yaml
 PYTHONPATH=src python examples/run_online_robot.py --config examples/config.dual_franka.runtime.yaml
 
 # Non-interactive debug tasks.
