@@ -34,6 +34,7 @@ logger = logging.getLogger(__name__)
 MONITOR_TOOL_NAME = "monitor"
 EXECUTE_TOOL_NAME = "execute"
 FETCH_ENV_TOOL_NAME = "fetch_env"
+CONTROL_TOOL_NAMES = {"stop_task", "reset_task", "emergency_stop"}
 
 
 class AgenticRobotLoop:
@@ -200,6 +201,11 @@ class AgenticRobotLoop:
         monitor_error = state.monitor_error
         tool_results: list[ToolResult] = []
         produced_events: list[AgenticEvent] = []
+        planner_output.tool_calls = _hydrate_monitor_tool_calls(
+            planner_output.tool_calls,
+            state,
+            self.monitor_tool_name,
+        )
         blocked_execute = _blocked_execute_call(
             planner_output.tool_calls,
             state.active_execution,
@@ -268,6 +274,11 @@ class AgenticRobotLoop:
                         _event("monitor_failed", {"error": str(exc)}, source="monitor"),
                         events=produced_events,
                     )
+
+        control_status = _apply_control_results(state, tool_results, events=produced_events)
+        if control_status is not None:
+            monitor_status = state.monitor_status
+            monitor_error = state.monitor_error
 
         state.last_tool_results = tool_results
         state.environment = self._merge_environment(state.environment, tool_results)
@@ -338,6 +349,7 @@ class AgenticRobotLoop:
                         subtask_index=state.subtask_index,
                         namespace=None,
                         execution_id=_optional_str(executor_output.data.get("execution_id") or executor_output.data.get("id")),
+                        monitor_id=_optional_str(executor_output.data.get("monitor_id")),
                         started_at=now,
                         metadata=metadata or {},
                         monitor_result=_first_monitor_result(
@@ -382,6 +394,7 @@ class AgenticRobotLoop:
                 subtask_index=state.subtask_index,
                 namespace=state.monitor_namespace,
                 execution_id=_execution_id(execute_result),
+                monitor_id=_monitor_id(execute_result),
                 started_at=now,
                 metadata=metadata or {},
                 monitor_result=_first_monitor_result(
@@ -445,7 +458,7 @@ class AgenticRobotLoop:
         state = _state_from(session_state)
         if task:
             state.task = task
-        if state.active_execution is None and not state.current_subtask:
+        if state.active_execution is None:
             planner_input = self._planner_input(
                 state,
                 images=images,
@@ -467,10 +480,11 @@ class AgenticRobotLoop:
                 subtask_index=state.subtask_index,
                 monitor_status=state.monitor_status,
                 monitor_error=state.monitor_error,
-                active_execution=copy.deepcopy(state.active_execution),
+                active_execution=None,
                 events=list(state.pending_events),
                 reason_requested=state.reason_requested,
             )
+            state.awaiting_monitor = False
             return result, state
 
         planner_input = self._planner_input(
@@ -712,6 +726,7 @@ class AgenticRobotLoop:
         subtask_index: int | None,
         namespace: str | None,
         execution_id: str | None,
+        monitor_id: str | None,
         started_at: float,
         metadata: JsonDict,
         monitor_result: ToolResult | None = None,
@@ -726,12 +741,16 @@ class AgenticRobotLoop:
                 subtask_index=subtask_index,
                 namespace=namespace,
                 execution_id=execution_id,
+                monitor_id=monitor_id,
                 metadata=metadata,
                 events=events,
             )
             monitor_result = started_monitor_result
         monitor_ok = bool(monitor_result and monitor_result.ok)
-        monitor_id = _optional_str(monitor_result.data.get("monitor_id")) if monitor_ok else None
+        monitor_id = (
+            (_optional_str(monitor_result.data.get("monitor_id")) if monitor_ok else None)
+            or monitor_id
+        )
         state.active_execution = ActiveExecution(
             subtask=subtask,
             subtask_index=subtask_index,
@@ -791,6 +810,7 @@ class AgenticRobotLoop:
         subtask_index: int | None,
         namespace: str | None,
         execution_id: str | None,
+        monitor_id: str | None,
         metadata: JsonDict,
         events: list[AgenticEvent] | None = None,
     ) -> ToolResult | None:
@@ -799,6 +819,8 @@ class AgenticRobotLoop:
             arguments["subtask_index"] = subtask_index
         if execution_id is not None:
             arguments["execution_id"] = execution_id
+        if monitor_id is not None:
+            arguments["monitor_id"] = monitor_id
         if metadata:
             arguments["metadata"] = metadata
         result = self.tool_client.call_tool(
@@ -942,6 +964,17 @@ def _execution_id(tool_result: ToolResult | None) -> str | None:
     )
 
 
+def _monitor_id(tool_result: ToolResult | None) -> str | None:
+    if tool_result is None:
+        return None
+    monitor = tool_result.data.get("monitor")
+    nested_monitor_id = monitor.get("monitor_id") if isinstance(monitor, dict) else None
+    return _optional_str(
+        tool_result.data.get("monitor_id")
+        or nested_monitor_id
+    )
+
+
 def _monitor_status_from_result(tool_result: ToolResult | None) -> MonitorStatus | None:
     if tool_result is None or not tool_result.ok:
         return None
@@ -975,6 +1008,74 @@ def _is_execute_call(tool_call: ToolCall, execute_tool_name: str) -> bool:
         return True
     role = _optional_str(tool_call.arguments.get("agentic_role") or tool_call.arguments.get("_agentic_role"))
     return role is not None and role.lower() in {"execute", "action"}
+
+
+def _hydrate_monitor_tool_calls(
+    tool_calls: list[ToolCall],
+    state: AgenticSessionState,
+    monitor_tool_name: str,
+) -> list[ToolCall]:
+    if state.active_execution is None:
+        return tool_calls
+    hydrated: list[ToolCall] = []
+    for tool_call in tool_calls:
+        if tool_call.name != monitor_tool_name:
+            hydrated.append(tool_call)
+            continue
+        arguments = dict(_monitor_arguments(state))
+        arguments.update(tool_call.arguments)
+        if not arguments.get("execution_id") and state.active_execution.execution_id:
+            arguments["execution_id"] = state.active_execution.execution_id
+        if not arguments.get("monitor_id") and state.active_execution.monitor_id:
+            arguments["monitor_id"] = state.active_execution.monitor_id
+        hydrated.append(
+            ToolCall(
+                name=tool_call.name,
+                arguments=arguments,
+                namespace=tool_call.namespace or state.monitor_namespace,
+                call_id=tool_call.call_id,
+            )
+        )
+    return hydrated
+
+
+def _apply_control_results(
+    state: AgenticSessionState,
+    tool_results: list[ToolResult],
+    *,
+    events: list[AgenticEvent] | None = None,
+) -> MonitorStatus | None:
+    control_result = next(
+        (
+            tool_result
+            for tool_result in tool_results
+            if tool_result.ok and tool_result.tool_name in CONTROL_TOOL_NAMES
+        ),
+        None,
+    )
+    if control_result is None:
+        return None
+    state.monitor_status = MonitorStatus.FAILED
+    state.monitor_error = f"{control_result.tool_name} requested"
+    if state.active_execution is not None:
+        state.active_execution.status = MonitorStatus.FAILED.value
+        state.active_execution.error = state.monitor_error
+        state.active_execution.updated_at = time.time()
+    state.awaiting_monitor = False
+    _queue_event_if_reasonable(
+        state,
+        _event(
+            "monitor_failed",
+            {
+                "status": MonitorStatus.FAILED.value,
+                "tool_name": control_result.tool_name,
+                "error": state.monitor_error,
+            },
+            source=control_result.namespace or control_result.tool_name,
+        ),
+        events=events,
+    )
+    return MonitorStatus.FAILED
 
 
 def _active_execution_running(active_execution: ActiveExecution | None) -> bool:

@@ -77,6 +77,7 @@ def test_dual_franka_execute_payload_allows_bridge_specific_overrides():
 
 def test_dual_franka_execute_auto_triggers_monitor():
     server = _load_dual_franka_server_module()
+    server._LAST_EXECUTION.clear()
     client = _RecordingHTTPClient(
         [
             {
@@ -124,8 +125,54 @@ def test_dual_franka_execute_auto_triggers_monitor():
     assert result["monitor"]["monitor"]["subtask"] == "pick up the cube"
 
 
+def test_dual_franka_monitor_uses_last_execution_ids_as_fallback():
+    server = _load_dual_franka_server_module()
+    server._LAST_EXECUTION.clear()
+    client = _RecordingHTTPClient(
+        [
+            {
+                "success": True,
+                "data": {
+                    "executed": True,
+                    "placeholder": True,
+                    "execution_id": "exec-1",
+                    "monitor_id": "mon-1",
+                },
+            },
+            {
+                "success": True,
+                "data": {
+                    "status": "running",
+                    "subtask": "pick up the cube",
+                    "execution_id": "exec-1",
+                    "monitor_id": "mon-1",
+                },
+            },
+            {
+                "success": True,
+                "data": {
+                    "status": "running",
+                    "subtask": "pick up the cube",
+                    "execution_id": "exec-1",
+                    "monitor_id": "mon-1",
+                },
+            },
+        ]
+    )
+
+    asyncio.run(server._execute(client, {"subtask": "pick up the cube"}))
+    result = asyncio.run(server._monitor(client, {}))
+
+    assert client.requests[-1]["path"] == "/monitors/status"
+    assert client.requests[-1]["json"]["execution_id"] == "exec-1"
+    assert client.requests[-1]["json"]["monitor_id"] == "mon-1"
+    assert result["execution_id"] == "exec-1"
+    assert result["monitor_id"] == "mon-1"
+
+
 def test_dual_franka_execute_does_not_poll_monitor_after_failed_start():
     server = _load_dual_franka_server_module()
+    server._LAST_EXECUTION.clear()
     client = _RecordingHTTPClient(
         [
             {

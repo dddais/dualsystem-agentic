@@ -522,6 +522,61 @@ curl -I http://ROBOT_MACHINE_IP:8767/observations/latest/cam_high.jpg
 如果仍然看到裸 HTTP 500，请确认 robot runtime、agent MCP server 和 monitor
 service 都已经重启，并且运行的是当前分支的最新代码。
 
+### 5.5 常见报错：`no monitor matches request`
+
+如果日志中出现：
+
+```text
+tools=[monitor] monitor=failed vlm=skipped
+parse_error=POST http://ROBOT_MACHINE_IP:8767/monitors/status returned HTTP 404: 'no monitor matches request'
+```
+
+含义是：agent 触发了系统自动 monitor poll，但请求里没有 runtime 能精确识别的
+`execution_id` / `monitor_id`，或者 robot runtime 已经重启/清空了内存状态。
+
+正确的 monitor 查询应类似：
+
+```json
+{
+  "subtask": "Pick up the pink cup and place it in the dish rack.",
+  "subtask_index": 0,
+  "execution_id": "exec-...",
+  "monitor_id": "mon-..."
+}
+```
+
+新版 agent loop 已经做了两层保护：
+
+- 没有 `active_execution` 时，不再仅凭 `current_subtask` 自动 poll monitor。
+- 有 `active_execution` 时，自动把 `execution_id` 和 `monitor_id` 补到 monitor tool call。
+
+MCP adapter 也会缓存最近一次 `execute` 返回的 `execution_id` / `monitor_id`，作为
+空参数 `monitor` 调用的兜底。更新后请同时重启 agent 进程和 MCP server 进程。
+
+如果 robot runtime 在任务中途重启，内存里的 execution/monitor store 会丢失，此时
+旧的 `execution_id` / `monitor_id` 也会失效。推荐处理方式是：
+
+```bash
+curl http://ROBOT_MACHINE_IP:8767/health
+curl -X POST http://ROBOT_MACHINE_IP:8767/control/reset
+```
+
+然后重新启动当前 long-horizon task。
+
+### 5.6 为什么会出现 `stop_task` / `reset_task`
+
+`stop_task`、`reset_task` 不是 runtime 自动发出的；它们是 VLM planner 在看到
+`monitor_failed`、`monitor_timeout`、连续执行失败或状态不一致后，从可用工具里选择的
+恢复动作。常见触发原因包括：
+
+- monitor service 返回 `failed`。
+- monitor 查询报错，被 agent 转成 `monitor_failed` 事件。
+- planner 认为当前动作卡住，需要 stop/reset 后重试。
+
+新版 agent loop 在 `stop_task`、`reset_task`、`emergency_stop` 成功返回后，会同步把本地
+`active_execution` 标记为 `failed` 并停止自动 monitor poll，避免 stop 之后继续用旧
+monitor id 查询 runtime。
+
 ## 6. 当前限制与后续接入点
 
 当前实现是 runtime 架构 v1：

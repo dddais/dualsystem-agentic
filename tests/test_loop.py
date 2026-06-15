@@ -467,6 +467,125 @@ def test_execute_status_running_reuses_initial_monitor_feedback():
     assert state.active_execution.status == "running"
 
 
+def test_monitor_poll_is_skipped_without_active_execution_even_with_current_subtask():
+    client = FakeMCPToolClient()
+    monitor_calls = []
+    client.register(
+        "monitor",
+        lambda args: monitor_calls.append(dict(args)) or {"status": "running", "subtask": args.get("subtask")},
+        namespace="demo_robot",
+    )
+    state = AgenticSessionState(
+        task="task",
+        current_subtask="pick cup",
+        subtask_index=0,
+        awaiting_monitor=True,
+        monitor_namespace="demo_robot",
+    )
+    loop = AgenticRobotLoop(_planner([]), client, RecordingExecutor())
+
+    result, state = loop.poll_monitor("task", state)
+
+    assert result.vlm_called is False
+    assert result.tool_results == []
+    assert monitor_calls == []
+    assert state.awaiting_monitor is False
+
+
+def test_planner_monitor_call_gets_active_execution_ids():
+    client = FakeMCPToolClient()
+    monitor_calls = []
+    client.register(
+        "monitor",
+        lambda args: (
+            monitor_calls.append(dict(args))
+            or {
+                "status": "running",
+                "subtask": args.get("subtask"),
+                "execution_id": args.get("execution_id"),
+                "monitor_id": args.get("monitor_id"),
+            }
+        ),
+        namespace="demo_robot",
+    )
+    planner = _planner(
+        [
+            json.dumps(
+                {
+                    "tool_calls": [{"namespace": "demo_robot", "name": "monitor", "arguments": {}}],
+                    "current_subtask": "pick cup",
+                    "should_execute": False,
+                }
+            )
+        ]
+    )
+    state = AgenticSessionState(
+        task="task",
+        current_subtask="pick cup",
+        subtask_index=0,
+        awaiting_monitor=True,
+        monitor_namespace="demo_robot",
+        active_execution=ActiveExecution(
+            subtask="pick cup",
+            subtask_index=0,
+            execution_id="exec-1",
+            monitor_id="mon-1",
+            namespace="demo_robot",
+        ),
+    )
+    loop = AgenticRobotLoop(planner, client, RecordingExecutor())
+
+    result, state = loop.step("task", state, reason_interval_s=0)
+
+    assert result.parse_ok is True
+    assert monitor_calls == [
+        {
+            "subtask": "pick cup",
+            "subtask_index": 0,
+            "execution_id": "exec-1",
+            "monitor_id": "mon-1",
+        }
+    ]
+    assert state.awaiting_monitor is True
+
+
+def test_stop_task_result_marks_active_execution_failed_locally():
+    client = FakeMCPToolClient()
+    client.register("stop_task", lambda args: {"stopped": True}, namespace="demo_robot")
+    planner = _planner(
+        [
+            json.dumps(
+                {
+                    "tool_calls": [{"namespace": "demo_robot", "name": "stop_task", "arguments": {}}],
+                    "current_subtask": "pick cup",
+                    "should_execute": False,
+                }
+            )
+        ]
+    )
+    state = AgenticSessionState(
+        task="task",
+        current_subtask="pick cup",
+        subtask_index=0,
+        awaiting_monitor=True,
+        active_execution=ActiveExecution(
+            subtask="pick cup",
+            subtask_index=0,
+            execution_id="exec-1",
+            monitor_id="mon-1",
+            namespace="demo_robot",
+        ),
+    )
+    loop = AgenticRobotLoop(planner, client, RecordingExecutor())
+
+    result, state = loop.step("task", state, reason_interval_s=0)
+
+    assert result.monitor_status is MonitorStatus.FAILED
+    assert state.awaiting_monitor is False
+    assert state.active_execution is not None
+    assert state.active_execution.status == "failed"
+
+
 def test_downstream_executor_auto_monitor_terminal_result_becomes_event():
     client = FakeMCPToolClient()
     client.register(

@@ -265,7 +265,10 @@ class RobotRuntime:
             candidates = [monitor for monitor in candidates if monitor.subtask_index == requested_index]
         if not candidates:
             raise KeyError("no monitor matches request")
-        return max(candidates, key=lambda monitor: monitor.created_at)
+        running = [monitor for monitor in candidates if normalize_status(monitor.status) == STATUS_RUNNING]
+        if running:
+            return max(running, key=lambda monitor: monitor.created_at)
+        raise KeyError("no active running monitor matches request")
 
 
 def _optional_text(value: object | None) -> str | None:

@@ -59,6 +59,8 @@ STOP_PATH = os.environ.get("DUAL_FRANKA_STOP_PATH") or "/control/stop"
 RESET_PATH = os.environ.get("DUAL_FRANKA_RESET_PATH") or "/control/reset"
 ESTOP_PATH = os.environ.get("DUAL_FRANKA_ESTOP_PATH") or "/control/emergency_stop"
 
+_LAST_EXECUTION: dict[str, Any] = {}
+
 app = Server("dual_franka_mcp_server")
 
 
@@ -217,6 +219,7 @@ async def _fetch_env(client: httpx.AsyncClient, arguments: dict) -> dict:
 
 
 async def _monitor(client: httpx.AsyncClient, arguments: dict) -> dict:
+    arguments = _hydrate_monitor_arguments(arguments)
     data = await _request(
         client,
         MONITOR_METHOD,
@@ -258,6 +261,15 @@ async def _execute(client: httpx.AsyncClient, arguments: dict) -> dict:
     monitor_status = str(monitor_data.get("status") or "running")
     execution_id = execute_data.get("execution_id") or execute_data.get("id") or execute_data.get("task_id")
     monitor_id = execute_data.get("monitor_id") or monitor_data.get("monitor_id")
+    _remember_execution(
+        {
+            "subtask": subtask,
+            "subtask_index": monitor_data.get("subtask_index", arguments.get("subtask_index")),
+            "execution_id": execution_id,
+            "monitor_id": monitor_id,
+            "task_id": monitor_data.get("task_id", arguments.get("task_id")) or execution_id,
+        }
+    )
     return {
         "agentic_role": "execute",
         "executed": bool(execute_data.get("executed", True)),
@@ -286,6 +298,28 @@ def _monitor_data_from_failed_execute(arguments: dict, subtask: str, execute_dat
         "error": execute_data.get("error"),
         "monitor": execute_data,
     }
+
+
+def _remember_execution(data: dict) -> None:
+    for key in ("subtask", "subtask_index", "execution_id", "monitor_id", "task_id"):
+        value = data.get(key)
+        if value is not None:
+            _LAST_EXECUTION[key] = value
+
+
+def _hydrate_monitor_arguments(arguments: dict) -> dict:
+    payload = dict(arguments or {})
+    if "execution_id" not in payload and _LAST_EXECUTION.get("execution_id"):
+        payload["execution_id"] = _LAST_EXECUTION["execution_id"]
+    if "monitor_id" not in payload and _LAST_EXECUTION.get("monitor_id"):
+        payload["monitor_id"] = _LAST_EXECUTION["monitor_id"]
+    if "task_id" not in payload and _LAST_EXECUTION.get("task_id"):
+        payload["task_id"] = _LAST_EXECUTION["task_id"]
+    if "subtask" not in payload and _LAST_EXECUTION.get("subtask"):
+        payload["subtask"] = _LAST_EXECUTION["subtask"]
+    if "subtask_index" not in payload and _LAST_EXECUTION.get("subtask_index") is not None:
+        payload["subtask_index"] = _LAST_EXECUTION["subtask_index"]
+    return payload
 
 
 async def _call_bridge(client: httpx.AsyncClient, arguments: dict) -> dict:
