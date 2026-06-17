@@ -158,6 +158,7 @@ class JsonlRunLogger:
                 else None,
                 "current_subtask": result.current_subtask,
                 "subtask_index": result.subtask_index,
+                "subtask_statuses": result.subtask_statuses,
                 "monitor_status": result.monitor_status.value if result.monitor_status else None,
                 "monitor_error": result.monitor_error,
                 "active_execution": result.active_execution.to_dict()
@@ -405,7 +406,7 @@ def _format_step(event: JsonDict) -> str:
     if events:
         lines.append(f"  events: {_compact_json(events, max_chars=1000)}")
 
-    _append_subtasks(lines, planner_input, planner_output, event.get("subtask_index"))
+    _append_subtasks(lines, event, planner_input, planner_output, event.get("subtask_index"))
     _append_images(lines, planner_input)
     _append_environment(lines, planner_input)
 
@@ -428,6 +429,7 @@ def _format_step(event: JsonDict) -> str:
 
 def _append_subtasks(
     lines: list[str],
+    event: JsonDict,
     planner_input: dict[str, Any],
     planner_output: dict[str, Any],
     event_subtask_index: object,
@@ -438,15 +440,22 @@ def _append_subtasks(
     if not isinstance(subtasks, list) or not subtasks:
         lines.append("  plan: <none>")
         return
+    statuses = event.get("subtask_statuses")
+    if not isinstance(statuses, list):
+        statuses = planner_input.get("subtask_statuses")
+    if not isinstance(statuses, list):
+        statuses = []
     current_index = event_subtask_index
     if current_index is None:
         current_index = planner_input.get("subtask_index")
     if current_index is None:
         current_index = planner_output.get("subtask_index")
+    current_index = _display_current_index(current_index, statuses)
     lines.append("  plan:")
     for index, subtask in enumerate(subtasks):
+        status = _one_line(statuses[index]) if index < len(statuses) else "pending"
         marker = " <- current" if index == current_index else ""
-        lines.append(f"    {index}. {_one_line(subtask)}{marker}")
+        lines.append(f"    {index}. [{status}] {_one_line(subtask)}{marker}")
 
 
 def _append_images(lines: list[str], planner_input: dict[str, Any]) -> None:
@@ -460,6 +469,20 @@ def _append_images(lines: list[str], planner_input: dict[str, Any]) -> None:
         size = _format_size(image.get("size_bytes"))
         mime_type = image.get("mime_type") or "unknown"
         lines.append(f"    - {label}: {path} ({mime_type}, {size})")
+
+
+def _display_current_index(current_index: object, statuses: list[Any]) -> object:
+    if not isinstance(current_index, int):
+        return current_index
+    if current_index < 0 or current_index >= len(statuses) or _one_line(statuses[current_index]) != "success":
+        return current_index
+    for index in range(current_index + 1, len(statuses)):
+        if _one_line(statuses[index]) == "pending":
+            return index
+    for index, status in enumerate(statuses):
+        if _one_line(status) == "pending":
+            return index
+    return current_index
 
 
 def _append_environment(lines: list[str], planner_input: dict[str, Any]) -> None:

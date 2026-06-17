@@ -18,6 +18,7 @@ from dualsystem_agentic.core.types import (
     ExecutorOutput,
     ImageInput,
     MonitorStatus,
+    SubtaskStatus,
     ToolCall,
     ToolResult,
 )
@@ -53,6 +54,7 @@ __all__ = [
     "OnlineTaskSummary",
     "ImageInput",
     "MonitorStatus",
+    "SubtaskStatus",
     "MCPToolClient",
     "FakeMCPToolClient",
     "OnlineAgentRuntime",

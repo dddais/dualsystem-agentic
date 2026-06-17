@@ -27,7 +27,7 @@ been removed; this adapter targets the runtime API only.
 | `monitor` | `POST /monitors/status` | returns `running` / `success` / `failed` |
 | `execute` | `POST /executions` + `POST /monitors/status` | starts a subtask, returns `execution_id` and `monitor_id` |
 | `stop_task` | `POST /control/stop` | stop |
-| `reset_task` | `POST /control/reset` | reset |
+| `reset_task` | hidden by default; `POST /control/reset` when enabled | reset |
 | `emergency_stop` | `POST /control/emergency_stop` | emergency stop |
 
 The project exposes these to the VLM as canonical names such as
@@ -47,6 +47,7 @@ Set these in `examples/config.dual_franka.runtime.yaml` under the MCP server
 | `DUAL_FRANKA_EXECUTE_PATH` | `/executions` |
 | `DUAL_FRANKA_STOP_PATH` | `/control/stop` |
 | `DUAL_FRANKA_RESET_PATH` | `/control/reset` |
+| `DUAL_FRANKA_ENABLE_RESET` | unset / false |
 | `DUAL_FRANKA_ESTOP_PATH` | `/control/emergency_stop` |
 
 Image acquisition is not an MCP tool. It uses the main config `dataloader` section,
@@ -65,6 +66,10 @@ set. This keeps local VLMs from repeatedly calling an empty scene-state tool
 until a real scene-graph/environment provider is implemented. If `_fetch_env` is
 called directly while the HTTP provider is disabled, it returns
 `{"environment": {}}` as a compatibility placeholder.
+
+`reset_task` is also hidden by default because the current runtime reset is a
+placeholder unless your robot-side driver implements real reset behavior. Set
+`DUAL_FRANKA_ENABLE_RESET=true` only after that behavior is safe for your setup.
 
 ## Adding or removing tools
 

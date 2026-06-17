@@ -30,7 +30,7 @@ from typing import Any
 from PIL import Image, ImageDraw, ImageFont, ImageOps
 
 
-DEFAULT_RUN_DIR = "runs/run_20260611_173450"
+DEFAULT_RUN_DIR = "runs/run_20260617_121212"
 DEFAULT_CAMERA_ORDER = ("cam_left_wrist", "cam_high", "cam_right_wrist")
 
 BG = (12, 18, 32)
@@ -133,6 +133,17 @@ def main() -> int:
         help="Comma-separated camera keys to show in order.",
     )
     parser.add_argument("--max-frames", type=int, default=None, help="Optional cap for quick previews.")
+    parser.add_argument(
+        "--step-range",
+        type=int,
+        nargs=2,
+        metavar=("START", "END"),
+        default=None,
+        help=(
+            "Render only steps within the inclusive 1-indexed range [START, END]. "
+            "Applied after --max-frames on the global frame index."
+        ),
+    )
     parser.add_argument("--hold-final-s", type=float, default=2.0, help="Seconds to hold the final frame.")
     parser.add_argument(
         "--combine-run",
@@ -148,6 +159,16 @@ def main() -> int:
     data = load_run(run_dir, selected_sessions=set(args.session or []))
     if args.max_frames is not None:
         data.frames = data.frames[: max(0, args.max_frames)]
+    if args.step_range is not None:
+        start, end = args.step_range
+        if start < 1 or end < start:
+            raise SystemExit(
+                f"--step-range requires 1 <= START <= END, got start={start} end={end}."
+            )
+        sliced = data.frames[max(0, start - 1): end]
+        for new_index, frame in enumerate(sliced):
+            frame.global_index = new_index
+        data.frames = sliced
     print_summary(data)
 
     if args.summary_only:

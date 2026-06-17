@@ -5,7 +5,6 @@ from __future__ import annotations
 import copy
 import logging
 import time
-from dataclasses import dataclass
 
 from dualsystem_agentic.core.parser import parse_agentic_planner_output
 from dualsystem_agentic.core.types import (
@@ -21,7 +20,6 @@ from dualsystem_agentic.core.types import (
     ImageInput,
     JsonDict,
     MonitorStatus,
-    SubtaskStatus,
     ToolCall,
     ToolResult,
     normalize_monitor_status,
@@ -37,41 +35,6 @@ MONITOR_TOOL_NAME = "monitor"
 EXECUTE_TOOL_NAME = "execute"
 FETCH_ENV_TOOL_NAME = "fetch_env"
 CONTROL_TOOL_NAMES = {"stop_task", "reset_task", "emergency_stop"}
-
-
-@dataclass(frozen=True)
-class _PlannerBlock:
-    message: str
-    event_type: str = "planner_inconsistent"
-
-
-@dataclass(frozen=True)
-class _PlanSelection:
-    current_subtask: str | None
-    subtask_index: int | None
-    error: str | None = None
-
-
-@dataclass(frozen=True)
-class _StepPlan:
-    subtasks: list[str]
-    subtask_statuses: list[SubtaskStatus]
-    current_subtask: str | None
-    subtask_index: int | None
-
-
-@dataclass(frozen=True)
-class _MonitorUpdate:
-    monitor_status: MonitorStatus | None
-    monitor_error: str | None
-    error: str | None = None
-
-
-@dataclass(frozen=True)
-class _ExecutionStep:
-    parse_ok: bool
-    parse_error: str | None
-    executor_output: ExecutorOutput | None = None
 
 
 class AgenticRobotLoop:
@@ -113,7 +76,6 @@ class AgenticRobotLoop:
             state.task = task
         if state.phase is AgenticPhase.INIT:
             state.phase = AgenticPhase.READY
-        _advance_current_after_completed_success(state)
 
         events = list(state.pending_events)
         should_reason = force_reason or state.reason_requested or bool(events)
@@ -138,7 +100,6 @@ class AgenticRobotLoop:
             current_subtask=state.current_subtask,
             subtask_index=state.subtask_index,
             subtasks=list(state.subtasks),
-            subtask_statuses=list(state.subtask_statuses),
             monitor_status=state.monitor_status,
             monitor_error=state.monitor_error,
             active_execution=copy.deepcopy(state.active_execution),
@@ -152,7 +113,26 @@ class AgenticRobotLoop:
         )
 
         if not should_reason:
-            return _tick_without_reason_result(state, planner_input, events), state
+            state.phase = AgenticPhase.READY if state.active_execution is None else AgenticPhase.RESPONSE
+            result = AgenticStepResult(
+                task=state.task,
+                step_index=state.step_index,
+                planner_input=planner_input,
+                planner_output=AgenticPlannerOutput(
+                    raw_output="[system] tick without reason",
+                    should_execute=False,
+                ),
+                phase=state.phase,
+                vlm_called=False,
+                current_subtask=state.current_subtask,
+                subtask_index=state.subtask_index,
+                monitor_status=state.monitor_status,
+                monitor_error=state.monitor_error,
+                active_execution=copy.deepcopy(state.active_execution),
+                events=events,
+                reason_requested=False,
+            )
+            return result, state
 
         state.phase = AgenticPhase.REASON
         state.last_reason_at = now
@@ -167,11 +147,37 @@ class AgenticRobotLoop:
         planner_output = parse_agentic_planner_output(raw_output)
 
         if planner_output.task_complete:
-            result = _task_complete_result(
-                state=state,
+            parse_ok = planner_output.parse_ok
+            parse_error = planner_output.parse_error
+            if _active_execution_running(state.active_execution):
+                parse_ok = False
+                parse_error = "planner cannot mark task_complete while active_execution is running"
+                state.phase = AgenticPhase.ERROR
+                state.reason_requested = True
+            else:
+                state.phase = AgenticPhase.DONE
+            if planner_output.current_subtask:
+                state.current_subtask = planner_output.current_subtask
+            if planner_output.subtask_index is not None:
+                state.subtask_index = planner_output.subtask_index
+            state.last_tool_results = []
+            state.awaiting_monitor = _active_execution_running(state.active_execution)
+            result = AgenticStepResult(
+                task=state.task,
+                step_index=state.step_index,
                 planner_input=planner_input,
                 planner_output=planner_output,
-                prior_events=events,
+                phase=state.phase,
+                current_subtask=state.current_subtask,
+                subtask_index=state.subtask_index,
+                monitor_status=state.monitor_status,
+                monitor_error=state.monitor_error,
+                active_execution=copy.deepcopy(state.active_execution),
+                events=events,
+                reason_requested=state.reason_requested,
+                task_complete=parse_ok,
+                parse_ok=parse_ok,
+                parse_error=parse_error,
             )
             state.step_index += 1
             return result, state
@@ -179,11 +185,15 @@ class AgenticRobotLoop:
         # Resolve the plan for this step: the planner may decompose (new subtasks),
         # revise the list, or just select an entry by index. Current subtask falls
         # back to subtasks[subtask_index] so the planner can select without restating.
-        step_plan = _resolve_step_plan(state, planner_output)
-        effective_subtasks = step_plan.subtasks
-        effective_subtask_statuses = step_plan.subtask_statuses
-        effective_index = step_plan.subtask_index
-        current_subtask = step_plan.current_subtask
+        effective_subtasks = list(planner_output.subtasks) if planner_output.subtasks else list(state.subtasks)
+        effective_index = (
+            planner_output.subtask_index
+            if planner_output.subtask_index is not None
+            else state.subtask_index
+        )
+        current_subtask = planner_output.current_subtask
+        if not current_subtask and effective_index is not None and 0 <= effective_index < len(effective_subtasks):
+            current_subtask = effective_subtasks[effective_index]
 
         parse_ok = planner_output.parse_ok
         parse_error = planner_output.parse_error
@@ -191,106 +201,97 @@ class AgenticRobotLoop:
         monitor_error = state.monitor_error
         tool_results: list[ToolResult] = []
         produced_events: list[AgenticEvent] = []
-        blocked: _PlannerBlock | None = None
-        if parse_ok:
-            plan_selection = _validate_and_reconcile_plan_selection(
-                effective_subtasks,
-                effective_index,
-                current_subtask,
-            )
-            if plan_selection.error:
-                parse_ok = False
-                parse_error = plan_selection.error
-                state.phase = AgenticPhase.ERROR
-                _queue_event_if_reasonable(
-                    state,
-                    _event(
-                        "planner_inconsistent",
-                        {"error": parse_error, "subtask": current_subtask},
-                        source="planner",
-                    ),
-                    events=produced_events,
-                )
-            else:
-                effective_index = plan_selection.subtask_index
-                current_subtask = plan_selection.current_subtask
-                blocked = _planner_structure_block(
-                    state=state,
-                    planner_output=planner_output,
-                    current_subtask=current_subtask,
-                    execute_tool_name=self.execute_tool_name,
-                )
-                if blocked is None:
-                    planner_output.tool_calls = _normalize_subtask_identity_tool_calls(
-                        planner_output.tool_calls,
-                        current_subtask=current_subtask,
-                        subtask_index=effective_index,
-                        execute_tool_name=self.execute_tool_name,
-                        monitor_tool_name=self.monitor_tool_name,
-                    )
         planner_output.tool_calls = _hydrate_monitor_tool_calls(
             planner_output.tool_calls,
             state,
             self.monitor_tool_name,
         )
-        if parse_ok and blocked is None:
-            blocked = _planner_action_block(
-                state=state,
-                planner_output=planner_output,
-                subtasks=effective_subtasks,
-                subtask_statuses=effective_subtask_statuses,
-                current_subtask=current_subtask,
-                subtask_index=effective_index,
-                execute_tool_name=self.execute_tool_name,
-            )
-        if blocked is not None:
+        blocked_execute = _blocked_execute_call(
+            planner_output.tool_calls,
+            state.active_execution,
+            self.execute_tool_name,
+        )
+        blocked_noop = _blocked_executable_noop(
+            state=state,
+            planner_output=planner_output,
+            current_subtask=current_subtask,
+        )
+        if blocked_execute is not None:
             parse_ok = False
-            parse_error = blocked.message
+            parse_error = blocked_execute
+            state.phase = AgenticPhase.ERROR
+            state.reason_requested = True
+        elif blocked_noop is not None:
+            parse_ok = False
+            parse_error = blocked_noop
             state.phase = AgenticPhase.ERROR
             _queue_event_if_reasonable(
                 state,
                 _event(
-                    blocked.event_type,
-                    {"error": blocked.message, "subtask": current_subtask},
+                    "planner_noop",
+                    {"error": blocked_noop, "subtask": current_subtask},
                     source="planner",
                 ),
                 events=produced_events,
             )
         elif parse_ok:
             state.phase = AgenticPhase.ACT if planner_output.tool_calls else AgenticPhase.RESPONSE
-            tool_results = self._call_tools(planner_output.tool_calls)
+            tool_results = [
+                self.tool_client.call_tool(
+                    tool_call.name,
+                    tool_call.arguments,
+                    namespace=tool_call.namespace,
+                    call_id=tool_call.call_id,
+                )
+                for tool_call in planner_output.tool_calls
+            ]
 
         # If a tool returned environment updates, capture a fresh image so the
         # next step shows the latest scene to the VLM.
         if any(self._is_environment_result(tool_result) for tool_result in tool_results):
-            self._refresh_images_after_environment_result(state, merged_images)
+            fresh = self._capture_images()
+            if fresh:
+                merged_images.update(fresh)
+                state._last_captured_images = fresh
 
         saw_monitor_feedback = False
         tool_calls_by_id = _tool_calls_by_id(planner_output.tool_calls)
         for tool_result in tool_results:
             if self._is_monitor_result(tool_result) and not self._is_execute_result(tool_result):
                 saw_monitor_feedback = True
-                monitor_update = _apply_monitor_result(
-                    state=state,
-                    tool_result=tool_result,
-                    tool_call=tool_calls_by_id.get(tool_result.call_id or "") or _first_tool_call(
+                try:
+                    tool_call = tool_calls_by_id.get(tool_result.call_id or "") or _first_tool_call(
                         planner_output.tool_calls,
                         tool_result.tool_name,
-                    ),
-                    current_subtask=current_subtask or state.current_subtask,
-                    subtask_index=effective_index,
-                    subtasks=effective_subtasks,
-                    statuses=effective_subtask_statuses,
-                    events=produced_events,
-                )
-                if monitor_update.error:
+                    )
+                    _validate_monitor_identity(
+                        tool_call=tool_call,
+                        result=tool_result,
+                        current_subtask=current_subtask or state.current_subtask,
+                        subtask_index=effective_index,
+                    )
+                    monitor_status = normalize_monitor_status(str(tool_result.data.get("status") or ""))
+                    monitor_error = _optional_str(tool_result.data.get("error"))
+                    _queue_event_if_reasonable(
+                        state,
+                        _monitor_event_from_status(
+                            monitor_status,
+                            tool_result=tool_result,
+                            subtask=current_subtask or state.current_subtask,
+                            subtask_index=effective_index,
+                        ),
+                        events=produced_events,
+                    )
+                except (TypeError, ValueError) as exc:
                     parse_ok = False
-                    parse_error = monitor_update.error
+                    parse_error = str(exc)
                     state.phase = AgenticPhase.ERROR
-                    monitor_error = monitor_update.error
-                else:
-                    monitor_status = monitor_update.monitor_status
-                    monitor_error = monitor_update.monitor_error
+                    monitor_error = str(exc)
+                    _queue_event_if_reasonable(
+                        state,
+                        _event("monitor_failed", {"error": str(exc)}, source="monitor"),
+                        events=produced_events,
+                    )
 
         control_status = _apply_control_results(state, tool_results, events=produced_events)
         if control_status is not None:
@@ -300,13 +301,11 @@ class AgenticRobotLoop:
         state.last_tool_results = tool_results
         state.environment = self._merge_environment(state.environment, tool_results)
 
-        if parse_ok:
-            state.subtasks = effective_subtasks
-            state.subtask_statuses = effective_subtask_statuses
-            if effective_index is not None:
-                state.subtask_index = effective_index
-            if current_subtask:
-                state.current_subtask = current_subtask
+        state.subtasks = effective_subtasks
+        if effective_index is not None:
+            state.subtask_index = effective_index
+        if current_subtask:
+            state.current_subtask = current_subtask
 
         state.monitor_status = monitor_status
         state.monitor_error = monitor_error
@@ -331,36 +330,109 @@ class AgenticRobotLoop:
                 events=produced_events,
             )
             state.reason_requested = True
-        if parse_ok:
-            executor_step = self._run_downstream_executor_if_needed(
-                state=state,
-                planner_output=planner_output,
-                current_subtask=current_subtask,
-                requested_mcp_execute=requested_mcp_execute,
-                tool_results=tool_results,
-                started_at=now,
-                metadata=metadata or {},
-                saw_monitor_feedback=saw_monitor_feedback,
-                events=produced_events,
-            )
-            parse_ok = executor_step.parse_ok
-            parse_error = executor_step.parse_error
-            executor_output = executor_step.executor_output
+        if parse_ok and current_subtask and not planner_output.task_complete and not requested_mcp_execute:
+            if _active_execution_running(state.active_execution):
+                if planner_output.should_execute_explicit and planner_output.should_execute:
+                    parse_ok = False
+                    parse_error = (
+                        "planner explicitly requested downstream executor while active_execution is running; "
+                        "set should_execute=false, wait, observe, or cancel before executing again"
+                    )
+                    state.phase = AgenticPhase.ERROR
+                    state.reason_requested = True
+            elif not planner_output.should_execute:
+                pass
+            else:
+                executor_output = self.executor.execute(
+                    ExecutorInput(
+                        task=state.task,
+                        subtask=current_subtask,
+                        metadata={
+                            **(metadata or {}),
+                            "step_index": state.step_index,
+                            "subtask_index": state.subtask_index,
+                            "monitor_status": state.monitor_status.value if state.monitor_status else None,
+                        },
+                    )
+                )
+                if executor_output is None:
+                    executor_output = ExecutorOutput.success()
+                if not executor_output.ok and state.monitor_status is MonitorStatus.SUCCESS:
+                    state.monitor_status = MonitorStatus.FAILED
+                    state.monitor_error = executor_output.error or "executor failed"
+                if executor_output.ok:
+                    start_monitor_result = self._start_active_execution(
+                        state=state,
+                        subtask=current_subtask,
+                        subtask_index=state.subtask_index,
+                        namespace=None,
+                        execution_id=_optional_str(executor_output.data.get("execution_id") or executor_output.data.get("id")),
+                        monitor_id=_optional_str(executor_output.data.get("monitor_id")),
+                        started_at=now,
+                        metadata=metadata or {},
+                        monitor_result=_first_monitor_result(
+                            tool_results,
+                            self.monitor_tool_name,
+                            self.execute_tool_name,
+                        ),
+                        emit_monitor_event=not saw_monitor_feedback,
+                        events=produced_events,
+                    )
+                    if start_monitor_result is not None:
+                        tool_results.append(start_monitor_result)
+                else:
+                    parse_ok = False
+                    parse_error = executor_output.error or "executor failed"
+                    state.phase = AgenticPhase.ERROR
+                    _queue_event_if_reasonable(
+                        state,
+                        _event(
+                            "execute_failed",
+                            {"subtask": current_subtask, "error": parse_error},
+                            source="executor",
+                        ),
+                        events=produced_events,
+                    )
+                    state.reason_requested = True
 
-        if parse_ok:
-            execute_step = self._finalize_mcp_execute_if_needed(
+        if requested_mcp_execute and parse_ok and _active_execution_running(state.active_execution):
+            parse_ok = False
+            parse_error = (
+                "execute result was produced while active_execution is running; "
+                "planner must wait, observe, or cancel before executing again"
+            )
+            state.phase = AgenticPhase.ERROR
+            state.reason_requested = True
+        elif requested_mcp_execute and parse_ok and current_subtask and not planner_output.task_complete:
+            state.monitor_namespace = _monitor_namespace(tool_results, state.monitor_namespace)
+            execute_result = _first_execute_result(tool_results, self.execute_tool_name)
+            start_monitor_result = self._start_active_execution(
                 state=state,
-                planner_output=planner_output,
-                current_subtask=current_subtask,
-                requested_mcp_execute=requested_mcp_execute,
-                tool_results=tool_results,
+                subtask=current_subtask,
+                subtask_index=state.subtask_index,
+                namespace=state.monitor_namespace,
+                execution_id=_execution_id(execute_result),
+                monitor_id=_monitor_id(execute_result),
                 started_at=now,
                 metadata=metadata or {},
-                saw_monitor_feedback=saw_monitor_feedback,
+                monitor_result=_first_monitor_result(
+                    tool_results,
+                    self.monitor_tool_name,
+                    self.execute_tool_name,
+                ),
+                emit_monitor_event=not saw_monitor_feedback,
                 events=produced_events,
             )
-            parse_ok = execute_step.parse_ok
-            parse_error = execute_step.parse_error
+            if start_monitor_result is not None:
+                tool_results.append(start_monitor_result)
+            if saw_monitor_feedback and state.monitor_status in {MonitorStatus.SUCCESS, MonitorStatus.FAILED}:
+                _finish_active_execution(state, state.monitor_status, state.monitor_error)
+            elif state.monitor_status is None or state.monitor_status is not MonitorStatus.RUNNING:
+                state.monitor_status = MonitorStatus.RUNNING
+                state.monitor_error = None
+        elif state.monitor_status in {MonitorStatus.SUCCESS, MonitorStatus.FAILED}:
+            state.awaiting_monitor = False
+            _finish_active_execution(state, state.monitor_status, state.monitor_error)
 
         if not parse_ok:
             state.phase = AgenticPhase.ERROR
@@ -379,7 +451,6 @@ class AgenticRobotLoop:
             executor_output=executor_output,
             current_subtask=state.current_subtask,
             subtask_index=state.subtask_index,
-            subtask_statuses=list(state.subtask_statuses),
             monitor_status=state.monitor_status,
             monitor_error=state.monitor_error,
             active_execution=copy.deepcopy(state.active_execution),
@@ -425,7 +496,6 @@ class AgenticRobotLoop:
                 vlm_called=False,
                 current_subtask=state.current_subtask,
                 subtask_index=state.subtask_index,
-                subtask_statuses=list(state.subtask_statuses),
                 monitor_status=state.monitor_status,
                 monitor_error=state.monitor_error,
                 active_execution=None,
@@ -489,7 +559,6 @@ class AgenticRobotLoop:
                         subtask_index=monitored_subtask_index,
                     )
                 )
-                _mark_subtask_status(state, monitored_subtask, monitored_subtask_index, monitor_status)
             except (TypeError, ValueError) as exc:
                 parse_ok = False
                 parse_error = str(exc)
@@ -543,7 +612,6 @@ class AgenticRobotLoop:
             tool_results=tool_results,
             current_subtask=monitored_subtask,
             subtask_index=monitored_subtask_index,
-            subtask_statuses=list(state.subtask_statuses),
             monitor_status=state.monitor_status,
             monitor_error=state.monitor_error,
             active_execution=copy.deepcopy(state.active_execution),
@@ -635,28 +703,6 @@ class AgenticRobotLoop:
             return None
         return frame.images or None
 
-    def _call_tools(self, tool_calls: list[ToolCall]) -> list[ToolResult]:
-        return [
-            self.tool_client.call_tool(
-                tool_call.name,
-                tool_call.arguments,
-                namespace=tool_call.namespace,
-                call_id=tool_call.call_id,
-            )
-            for tool_call in tool_calls
-        ]
-
-    def _refresh_images_after_environment_result(
-        self,
-        state: AgenticSessionState,
-        merged_images: dict[str, ImageInput],
-    ) -> None:
-        fresh = self._capture_images()
-        if not fresh:
-            return
-        merged_images.update(fresh)
-        state._last_captured_images = fresh
-
     def _planner_input(
         self,
         state: AgenticSessionState,
@@ -678,7 +724,6 @@ class AgenticRobotLoop:
             current_subtask=state.current_subtask,
             subtask_index=state.subtask_index,
             subtasks=list(state.subtasks),
-            subtask_statuses=list(state.subtask_statuses),
             monitor_status=state.monitor_status,
             monitor_error=state.monitor_error,
             active_execution=copy.deepcopy(state.active_execution),
@@ -690,147 +735,6 @@ class AgenticRobotLoop:
             images=dict(merged_images),
             metadata=_planner_metadata(metadata or {}, self.include_metadata_in_prompt),
         )
-
-    def _run_downstream_executor_if_needed(
-        self,
-        *,
-        state: AgenticSessionState,
-        planner_output: AgenticPlannerOutput,
-        current_subtask: str | None,
-        requested_mcp_execute: bool,
-        tool_results: list[ToolResult],
-        started_at: float,
-        metadata: JsonDict,
-        saw_monitor_feedback: bool,
-        events: list[AgenticEvent],
-    ) -> _ExecutionStep:
-        if not current_subtask or planner_output.task_complete or requested_mcp_execute:
-            return _ExecutionStep(parse_ok=True, parse_error=None)
-        if _active_execution_running(state.active_execution):
-            if not (planner_output.should_execute_explicit and planner_output.should_execute):
-                return _ExecutionStep(parse_ok=True, parse_error=None)
-            parse_error = (
-                "planner explicitly requested downstream executor while active_execution is running; "
-                "set should_execute=false, wait, observe, or cancel before executing again"
-            )
-            state.phase = AgenticPhase.ERROR
-            state.reason_requested = True
-            return _ExecutionStep(parse_ok=False, parse_error=parse_error)
-        if not planner_output.should_execute:
-            return _ExecutionStep(parse_ok=True, parse_error=None)
-
-        executor_output = self.executor.execute(
-            ExecutorInput(
-                task=state.task,
-                subtask=current_subtask,
-                metadata={
-                    **metadata,
-                    "step_index": state.step_index,
-                    "subtask_index": state.subtask_index,
-                    "monitor_status": state.monitor_status.value if state.monitor_status else None,
-                },
-            )
-        )
-        if executor_output is None:
-            executor_output = ExecutorOutput.success()
-        if not executor_output.ok and state.monitor_status is MonitorStatus.SUCCESS:
-            state.monitor_status = MonitorStatus.FAILED
-            state.monitor_error = executor_output.error or "executor failed"
-        if executor_output.ok:
-            start_monitor_result = self._start_active_execution(
-                state=state,
-                subtask=current_subtask,
-                subtask_index=state.subtask_index,
-                namespace=None,
-                execution_id=_optional_str(executor_output.data.get("execution_id") or executor_output.data.get("id")),
-                monitor_id=_optional_str(executor_output.data.get("monitor_id")),
-                started_at=started_at,
-                metadata=metadata,
-                monitor_result=_first_monitor_result(
-                    tool_results,
-                    self.monitor_tool_name,
-                    self.execute_tool_name,
-                ),
-                emit_monitor_event=not saw_monitor_feedback,
-                events=events,
-            )
-            if start_monitor_result is not None:
-                tool_results.append(start_monitor_result)
-            return _ExecutionStep(
-                parse_ok=True,
-                parse_error=None,
-                executor_output=executor_output,
-            )
-
-        parse_error = executor_output.error or "executor failed"
-        state.phase = AgenticPhase.ERROR
-        _queue_event_if_reasonable(
-            state,
-            _event(
-                "execute_failed",
-                {"subtask": current_subtask, "error": parse_error},
-                source="executor",
-            ),
-            events=events,
-        )
-        state.reason_requested = True
-        return _ExecutionStep(
-            parse_ok=False,
-            parse_error=parse_error,
-            executor_output=executor_output,
-        )
-
-    def _finalize_mcp_execute_if_needed(
-        self,
-        *,
-        state: AgenticSessionState,
-        planner_output: AgenticPlannerOutput,
-        current_subtask: str | None,
-        requested_mcp_execute: bool,
-        tool_results: list[ToolResult],
-        started_at: float,
-        metadata: JsonDict,
-        saw_monitor_feedback: bool,
-        events: list[AgenticEvent],
-    ) -> _ExecutionStep:
-        if requested_mcp_execute and _active_execution_running(state.active_execution):
-            parse_error = (
-                "execute result was produced while active_execution is running; "
-                "planner must wait, observe, or cancel before executing again"
-            )
-            state.phase = AgenticPhase.ERROR
-            state.reason_requested = True
-            return _ExecutionStep(parse_ok=False, parse_error=parse_error)
-        if requested_mcp_execute and current_subtask and not planner_output.task_complete:
-            state.monitor_namespace = _monitor_namespace(tool_results, state.monitor_namespace)
-            execute_result = _first_execute_result(tool_results, self.execute_tool_name)
-            start_monitor_result = self._start_active_execution(
-                state=state,
-                subtask=current_subtask,
-                subtask_index=state.subtask_index,
-                namespace=state.monitor_namespace,
-                execution_id=_execution_id(execute_result),
-                monitor_id=_monitor_id(execute_result),
-                started_at=started_at,
-                metadata=metadata,
-                monitor_result=_first_monitor_result(
-                    tool_results,
-                    self.monitor_tool_name,
-                    self.execute_tool_name,
-                ),
-                emit_monitor_event=not saw_monitor_feedback,
-                events=events,
-            )
-            if start_monitor_result is not None:
-                tool_results.append(start_monitor_result)
-            _finalize_requested_execute_state(
-                state,
-                saw_monitor_feedback=saw_monitor_feedback,
-            )
-        elif state.monitor_status in {MonitorStatus.SUCCESS, MonitorStatus.FAILED}:
-            state.awaiting_monitor = False
-            _finish_active_execution(state, state.monitor_status, state.monitor_error)
-        return _ExecutionStep(parse_ok=True, parse_error=None)
 
     def _start_active_execution(
         self,
@@ -879,7 +783,6 @@ class AgenticRobotLoop:
         state.monitor_error = None
         state.awaiting_monitor = True
         state.monitor_namespace = state.active_execution.namespace or state.monitor_namespace
-        _mark_subtask_status(state, subtask, subtask_index, MonitorStatus.RUNNING)
         if monitor_ok and monitor_result is not None:
             status = _monitor_status_from_result(monitor_result)
             if status is not None:
@@ -970,92 +873,6 @@ def _state_from(value: AgenticSessionState | JsonDict | None) -> AgenticSessionS
     return AgenticSessionState.from_dict(value)
 
 
-def _tick_without_reason_result(
-    state: AgenticSessionState,
-    planner_input: AgenticPlannerInput,
-    events: list[AgenticEvent],
-) -> AgenticStepResult:
-    state.phase = AgenticPhase.READY if state.active_execution is None else AgenticPhase.RESPONSE
-    return AgenticStepResult(
-        task=state.task,
-        step_index=state.step_index,
-        planner_input=planner_input,
-        planner_output=AgenticPlannerOutput(
-            raw_output="[system] tick without reason",
-            should_execute=False,
-        ),
-        phase=state.phase,
-        vlm_called=False,
-        current_subtask=state.current_subtask,
-        subtask_index=state.subtask_index,
-        subtask_statuses=list(state.subtask_statuses),
-        monitor_status=state.monitor_status,
-        monitor_error=state.monitor_error,
-        active_execution=copy.deepcopy(state.active_execution),
-        events=events,
-        reason_requested=False,
-    )
-
-
-def _task_complete_result(
-    *,
-    state: AgenticSessionState,
-    planner_input: AgenticPlannerInput,
-    planner_output: AgenticPlannerOutput,
-    prior_events: list[AgenticEvent],
-) -> AgenticStepResult:
-    parse_ok = planner_output.parse_ok
-    parse_error = planner_output.parse_error
-    produced_events: list[AgenticEvent] = []
-    if _active_execution_running(state.active_execution):
-        parse_ok = False
-        parse_error = "planner cannot mark task_complete while active_execution is running"
-        state.phase = AgenticPhase.ERROR
-        state.reason_requested = True
-    elif _has_partial_subtask_progress_with_remaining_work(state):
-        parse_ok = False
-        parse_error = (
-            "planner cannot mark task_complete while the subtask plan has "
-            "incomplete subtask(s); finish, replan, or explicitly cancel remaining work"
-        )
-        state.phase = AgenticPhase.ERROR
-        _queue_event_if_reasonable(
-            state,
-            _event(
-                "planner_inconsistent",
-                {"error": parse_error, "subtask": state.current_subtask},
-                source="planner",
-            ),
-            events=produced_events,
-        )
-    else:
-        state.phase = AgenticPhase.DONE
-    if planner_output.current_subtask:
-        state.current_subtask = planner_output.current_subtask
-    if planner_output.subtask_index is not None:
-        state.subtask_index = planner_output.subtask_index
-    state.last_tool_results = []
-    state.awaiting_monitor = _active_execution_running(state.active_execution)
-    return AgenticStepResult(
-        task=state.task,
-        step_index=state.step_index,
-        planner_input=planner_input,
-        planner_output=planner_output,
-        phase=state.phase,
-        current_subtask=state.current_subtask,
-        subtask_index=state.subtask_index,
-        subtask_statuses=list(state.subtask_statuses),
-        monitor_status=state.monitor_status,
-        monitor_error=state.monitor_error,
-        active_execution=copy.deepcopy(state.active_execution),
-        events=prior_events + _dedupe_events(produced_events + list(state.pending_events)),
-        reason_requested=state.reason_requested,
-        task_complete=parse_ok,
-        parse_ok=parse_ok,
-        parse_error=parse_error,
-    )
-
-
 def _validate_monitor_identity(
     *,
     tool_call: ToolCall | None,
@@ -1075,18 +892,6 @@ def _validate_monitor_identity(
             if subtask_index is not None and normalized_index != subtask_index:
                 raise ValueError(
                     f"Monitor subtask_index mismatch: expected {subtask_index}, got {normalized_index}"
-                )
-    for key in ("execution_id", "monitor_id"):
-        expected_identity: str | None = None
-        for identity_value in _identity_values((key,), tool_call, result):
-            normalized_identity = _optional_str(identity_value)
-            if not normalized_identity:
-                continue
-            if expected_identity is None:
-                expected_identity = normalized_identity
-            elif normalized_identity != expected_identity:
-                raise ValueError(
-                    f"Monitor {key} mismatch: expected {expected_identity!r}, got {normalized_identity!r}"
                 )
 
 
@@ -1204,17 +1009,14 @@ def _blocked_execute_call(
     tool_calls: list[ToolCall],
     active_execution: ActiveExecution | None,
     execute_tool_name: str,
-) -> _PlannerBlock | None:
+) -> str | None:
     if not _active_execution_running(active_execution):
         return None
     for tool_call in tool_calls:
         if _is_execute_call(tool_call, execute_tool_name):
-            return _PlannerBlock(
-                (
-                    "planner attempted execute while active_execution is running "
-                    f"for {active_execution.subtask!r}; wait, observe, or cancel before executing again"
-                ),
-                event_type="planner_blocked_execute",
+            return (
+                "planner attempted execute while active_execution is running "
+                f"for {active_execution.subtask!r}; wait, observe, or cancel before executing again"
             )
     return None
 
@@ -1226,348 +1028,12 @@ def _is_execute_call(tool_call: ToolCall, execute_tool_name: str) -> bool:
     return role is not None and role.lower() in {"execute", "action"}
 
 
-def _normalize_subtask_identity_tool_calls(
-    tool_calls: list[ToolCall],
-    *,
-    current_subtask: str | None,
-    subtask_index: int | None,
-    execute_tool_name: str,
-    monitor_tool_name: str,
-) -> list[ToolCall]:
-    normalized: list[ToolCall] = []
-    for tool_call in tool_calls:
-        if not (_is_execute_call(tool_call, execute_tool_name) or tool_call.name == monitor_tool_name):
-            normalized.append(tool_call)
-            continue
-        arguments = dict(tool_call.arguments)
-        if current_subtask:
-            arguments["subtask"] = current_subtask
-        if subtask_index is not None:
-            arguments["subtask_index"] = subtask_index
-        normalized.append(
-            ToolCall(
-                name=tool_call.name,
-                arguments=arguments,
-                namespace=tool_call.namespace,
-                call_id=tool_call.call_id,
-            )
-        )
-    return normalized
-
-
-def _resolve_step_plan(
-    state: AgenticSessionState,
-    planner_output: AgenticPlannerOutput,
-) -> _StepPlan:
-    subtasks = list(planner_output.subtasks) if planner_output.subtasks else list(state.subtasks)
-    subtask_statuses = _reconcile_subtask_statuses(
-        state.subtasks,
-        state.subtask_statuses,
-        subtasks,
-    )
-    subtask_index = (
-        planner_output.subtask_index
-        if planner_output.subtask_index is not None
-        else state.subtask_index
-    )
-    current_subtask = planner_output.current_subtask
-    if not current_subtask and subtask_index is not None and 0 <= subtask_index < len(subtasks):
-        current_subtask = subtasks[subtask_index]
-    return _StepPlan(
-        subtasks=subtasks,
-        subtask_statuses=subtask_statuses,
-        current_subtask=current_subtask,
-        subtask_index=subtask_index,
-    )
-
-
-def _validate_and_reconcile_plan_selection(
-    subtasks: list[str],
-    subtask_index: int | None,
-    current_subtask: str | None,
-) -> _PlanSelection:
-    if not subtasks:
-        return _PlanSelection(current_subtask=current_subtask, subtask_index=subtask_index)
-    if subtask_index is not None:
-        if subtask_index < 0 or subtask_index >= len(subtasks):
-            return _PlanSelection(
-                current_subtask=current_subtask,
-                subtask_index=subtask_index,
-                error=(
-                    f"planner selected subtask_index {subtask_index}, but the plan has "
-                    f"{len(subtasks)} item(s)"
-                ),
-            )
-        expected = subtasks[subtask_index]
-        if current_subtask and current_subtask != expected:
-            matches = [index for index, subtask in enumerate(subtasks) if subtask == current_subtask]
-            if len(matches) == 1:
-                return _PlanSelection(current_subtask=current_subtask, subtask_index=matches[0])
-            if not matches:
-                return _PlanSelection(
-                    current_subtask=current_subtask,
-                    subtask_index=subtask_index,
-                    error=(
-                        "planner current_subtask is not in the subtask plan; "
-                        "select an existing subtask by subtask_index or return a revised subtasks list"
-                    ),
-                )
-            return _PlanSelection(
-                current_subtask=current_subtask,
-                subtask_index=subtask_index,
-                error=(
-                    "planner current_subtask does not match subtasks[subtask_index]: "
-                    f"index {subtask_index} is {expected!r}, got {current_subtask!r}"
-                ),
-            )
-        return _PlanSelection(current_subtask=expected, subtask_index=subtask_index)
-    if current_subtask:
-        matches = [index for index, subtask in enumerate(subtasks) if subtask == current_subtask]
-        if len(matches) == 1:
-            return _PlanSelection(current_subtask=current_subtask, subtask_index=matches[0])
-        return _PlanSelection(
-            current_subtask=current_subtask,
-            subtask_index=subtask_index,
-            error=(
-                "planner current_subtask is not in the subtask plan; "
-                "select an existing subtask by subtask_index or return a revised subtasks list"
-            ),
-        )
-    return _PlanSelection(current_subtask=current_subtask, subtask_index=subtask_index)
-
-
-def _planner_structure_block(
-    *,
-    state: AgenticSessionState,
-    planner_output: AgenticPlannerOutput,
-    current_subtask: str | None,
-    execute_tool_name: str,
-) -> _PlannerBlock | None:
-    return (
-        _blocked_replan_while_active(
-            state=state,
-            planner_output=planner_output,
-        )
-        or _blocked_replan_after_all_success(
-            state=state,
-            planner_output=planner_output,
-        )
-        or _blocked_remove_successful_subtasks(
-            state=state,
-            planner_output=planner_output,
-        )
-        or _blocked_active_current_subtask_mismatch(
-            state=state,
-            current_subtask=current_subtask,
-        )
-        or _blocked_execute_subtask_mismatch(
-            planner_output.tool_calls,
-            current_subtask,
-            execute_tool_name,
-        )
-    )
-
-
-def _planner_action_block(
-    *,
-    state: AgenticSessionState,
-    planner_output: AgenticPlannerOutput,
-    subtasks: list[str],
-    subtask_statuses: list[SubtaskStatus],
-    current_subtask: str | None,
-    subtask_index: int | None,
-    execute_tool_name: str,
-) -> _PlannerBlock | None:
-    return (
-        _blocked_execute_call(
-            planner_output.tool_calls,
-            state.active_execution,
-            execute_tool_name,
-        )
-        or _blocked_reexecute_after_success(
-            state=state,
-            planner_output=planner_output,
-            current_subtask=current_subtask,
-            execute_tool_name=execute_tool_name,
-        )
-        or _blocked_execute_completed_subtask(
-            tool_calls=planner_output.tool_calls,
-            subtasks=subtasks,
-            subtask_statuses=subtask_statuses,
-            current_subtask=current_subtask,
-            subtask_index=subtask_index,
-            execute_tool_name=execute_tool_name,
-        )
-        or _blocked_executable_noop(
-            state=state,
-            planner_output=planner_output,
-            current_subtask=current_subtask,
-        )
-    )
-
-
-def _blocked_replan_while_active(
-    *,
-    state: AgenticSessionState,
-    planner_output: AgenticPlannerOutput,
-) -> _PlannerBlock | None:
-    if not _active_execution_running(state.active_execution):
-        return None
-    if not planner_output.subtasks or planner_output.subtasks == state.subtasks:
-        return None
-    return _PlannerBlock(
-        (
-            "planner attempted to revise subtasks while active_execution is running "
-            f"for {state.active_execution.subtask!r}; keep the plan stable until monitor_success, "
-            "monitor_failed, or monitor_timeout, or stop/cancel the active execution first"
-        ),
-        event_type="planner_blocked_replan",
-    )
-
-
-def _blocked_remove_successful_subtasks(
-    *,
-    state: AgenticSessionState,
-    planner_output: AgenticPlannerOutput,
-) -> _PlannerBlock | None:
-    if not planner_output.subtasks or planner_output.subtasks == state.subtasks:
-        return None
-    removed_successes = [
-        subtask
-        for index, subtask in enumerate(state.subtasks)
-        if index < len(state.subtask_statuses)
-        and state.subtask_statuses[index] is SubtaskStatus.SUCCESS
-        and subtask not in planner_output.subtasks
-    ]
-    if not removed_successes:
-        return None
-    removed = ", ".join(repr(subtask) for subtask in removed_successes)
-    return _PlannerBlock(
-        (
-            "planner revised subtasks but removed completed subtask(s): "
-            f"{removed}; keep success items in the plan as completed history and only "
-            "add/remove pending or failed work"
-        ),
-        event_type="planner_invalid_replan",
-    )
-
-
-def _blocked_replan_after_all_success(
-    *,
-    state: AgenticSessionState,
-    planner_output: AgenticPlannerOutput,
-) -> _PlannerBlock | None:
-    if not _all_subtasks_success(state):
-        return None
-    if not planner_output.subtasks or planner_output.subtasks == state.subtasks:
-        return None
-    return _PlannerBlock(
-        (
-            "planner revised subtasks after all existing subtasks were marked success; "
-            "set task_complete=true unless the user starts a new task"
-        ),
-        event_type="planner_invalid_replan",
-    )
-
-
-def _blocked_active_current_subtask_mismatch(
-    *,
-    state: AgenticSessionState,
-    current_subtask: str | None,
-) -> _PlannerBlock | None:
-    active_execution = state.active_execution
-    if not _active_execution_running(active_execution) or not current_subtask:
-        return None
-    if current_subtask == active_execution.subtask:
-        return None
-    return _PlannerBlock(
-        (
-            "planner selected a different current_subtask while active_execution is running: "
-            f"active={active_execution.subtask!r}, selected={current_subtask!r}; keep the "
-            "current_subtask on the active execution until monitor terminal status"
-        ),
-        event_type="planner_inconsistent",
-    )
-
-
-def _blocked_reexecute_after_success(
-    *,
-    state: AgenticSessionState,
-    planner_output: AgenticPlannerOutput,
-    current_subtask: str | None,
-    execute_tool_name: str,
-) -> _PlannerBlock | None:
-    if state.monitor_status is not MonitorStatus.SUCCESS or not current_subtask:
-        return None
-    if state.active_execution is None or state.active_execution.subtask != current_subtask:
-        return None
-    if any(_is_execute_call(tool_call, execute_tool_name) for tool_call in planner_output.tool_calls):
-        return _PlannerBlock(
-            (
-                "planner attempted to execute the same subtask that just reached monitor_success; "
-                "advance subtask_index, revise the plan, or complete the task instead"
-            ),
-            event_type="planner_repeated_success",
-        )
-    return None
-
-
-def _blocked_execute_completed_subtask(
-    *,
-    tool_calls: list[ToolCall],
-    subtasks: list[str],
-    subtask_statuses: list[SubtaskStatus],
-    current_subtask: str | None,
-    subtask_index: int | None,
-    execute_tool_name: str,
-) -> _PlannerBlock | None:
-    if not any(_is_execute_call(tool_call, execute_tool_name) for tool_call in tool_calls):
-        return None
-    status = _selected_subtask_status(
-        subtasks,
-        subtask_statuses,
-        current_subtask,
-        subtask_index,
-    )
-    if status is not SubtaskStatus.SUCCESS:
-        return None
-    return _PlannerBlock(
-        (
-            "planner attempted to execute a subtask already marked success; "
-            "select the next pending subtask, revise the plan, or complete the task instead"
-        ),
-        event_type="planner_repeated_success",
-    )
-
-
-def _blocked_execute_subtask_mismatch(
-    tool_calls: list[ToolCall],
-    current_subtask: str | None,
-    execute_tool_name: str,
-) -> _PlannerBlock | None:
-    if not current_subtask:
-        return None
-    for tool_call in tool_calls:
-        if not _is_execute_call(tool_call, execute_tool_name):
-            continue
-        requested = _optional_str(tool_call.arguments.get("subtask"))
-        if requested and requested != current_subtask:
-            return _PlannerBlock(
-                (
-                    "execute tool subtask does not match current_subtask: "
-                    f"current_subtask={current_subtask!r}, execute.subtask={requested!r}"
-                ),
-                event_type="planner_inconsistent",
-            )
-    return None
-
-
 def _blocked_executable_noop(
     *,
     state: AgenticSessionState,
     planner_output: AgenticPlannerOutput,
     current_subtask: str | None,
-) -> _PlannerBlock | None:
+) -> str | None:
     if (
         not planner_output.parse_ok
         or planner_output.task_complete
@@ -1580,13 +1046,10 @@ def _blocked_executable_noop(
         return None
     if planner_output.subtasks and planner_output.subtasks != state.subtasks:
         return None
-    return _PlannerBlock(
-        (
-            "planner selected an executable current_subtask but returned no tool_calls "
-            "and should_execute=false; call the available execute tool, set should_execute=true, "
-            "revise the plan, or complete/abort"
-        ),
-        event_type="planner_noop",
+    return (
+        "planner selected an executable current_subtask but returned no tool_calls "
+        "and should_execute=false; call the available execute tool, set should_execute=true, "
+        "revise the plan, or complete/abort"
     )
 
 
@@ -1638,9 +1101,10 @@ def _apply_control_results(
     state.monitor_status = MonitorStatus.FAILED
     state.monitor_error = f"{control_result.tool_name} requested"
     if state.active_execution is not None:
-        _finish_active_execution(state, MonitorStatus.FAILED, state.monitor_error)
-    else:
-        state.awaiting_monitor = False
+        state.active_execution.status = MonitorStatus.FAILED.value
+        state.active_execution.error = state.monitor_error
+        state.active_execution.updated_at = time.time()
+    state.awaiting_monitor = False
     _queue_event_if_reasonable(
         state,
         _event(
@@ -1655,221 +1119,6 @@ def _apply_control_results(
         events=events,
     )
     return MonitorStatus.FAILED
-
-
-def _apply_monitor_result(
-    *,
-    state: AgenticSessionState,
-    tool_result: ToolResult,
-    tool_call: ToolCall | None,
-    current_subtask: str | None,
-    subtask_index: int | None,
-    subtasks: list[str],
-    statuses: list[SubtaskStatus],
-    events: list[AgenticEvent] | None = None,
-) -> _MonitorUpdate:
-    try:
-        _validate_monitor_identity(
-            tool_call=tool_call,
-            result=tool_result,
-            current_subtask=current_subtask,
-            subtask_index=subtask_index,
-        )
-        monitor_status = normalize_monitor_status(str(tool_result.data.get("status") or ""))
-        monitor_error = _optional_str(tool_result.data.get("error"))
-        _queue_event_if_reasonable(
-            state,
-            _monitor_event_from_status(
-                monitor_status,
-                tool_result=tool_result,
-                subtask=current_subtask,
-                subtask_index=subtask_index,
-            ),
-            events=events,
-        )
-        _mark_subtask_status(
-            state,
-            current_subtask,
-            subtask_index,
-            monitor_status,
-            subtasks=subtasks,
-            statuses=statuses,
-        )
-        return _MonitorUpdate(
-            monitor_status=monitor_status,
-            monitor_error=monitor_error,
-        )
-    except (TypeError, ValueError) as exc:
-        error = str(exc)
-        _queue_event_if_reasonable(
-            state,
-            _event("monitor_failed", {"error": error}, source="monitor"),
-            events=events,
-        )
-        return _MonitorUpdate(
-            monitor_status=MonitorStatus.FAILED,
-            monitor_error=error,
-            error=error,
-        )
-
-
-def _finalize_requested_execute_state(
-    state: AgenticSessionState,
-    *,
-    saw_monitor_feedback: bool,
-) -> None:
-    if state.monitor_status in {MonitorStatus.SUCCESS, MonitorStatus.FAILED}:
-        _finish_active_execution(state, state.monitor_status, state.monitor_error)
-        return
-    if saw_monitor_feedback:
-        return
-    if _active_execution_running(state.active_execution):
-        state.monitor_status = MonitorStatus.RUNNING
-        state.monitor_error = None
-
-
-def _reconcile_subtask_statuses(
-    previous_subtasks: list[str],
-    previous_statuses: list[SubtaskStatus],
-    subtasks: list[str],
-) -> list[SubtaskStatus]:
-    if not subtasks:
-        return []
-    reconciled: list[SubtaskStatus] = []
-    used_previous_indexes: set[int] = set()
-    for index, subtask in enumerate(subtasks):
-        status = SubtaskStatus.PENDING
-        if index < len(previous_subtasks) and previous_subtasks[index] == subtask:
-            if index < len(previous_statuses):
-                status = previous_statuses[index]
-            used_previous_indexes.add(index)
-        else:
-            for previous_index, previous_subtask in enumerate(previous_subtasks):
-                if previous_index in used_previous_indexes or previous_subtask != subtask:
-                    continue
-                if previous_index < len(previous_statuses):
-                    status = previous_statuses[previous_index]
-                used_previous_indexes.add(previous_index)
-                break
-        reconciled.append(status)
-    return reconciled
-
-
-def _mark_subtask_status(
-    state: AgenticSessionState,
-    subtask: str | None,
-    subtask_index: int | None,
-    monitor_status: MonitorStatus,
-    *,
-    subtasks: list[str] | None = None,
-    statuses: list[SubtaskStatus] | None = None,
-) -> None:
-    target_subtasks = subtasks if subtasks is not None else state.subtasks
-    target_statuses = statuses if statuses is not None else state.subtask_statuses
-    if not target_subtasks:
-        return
-    while len(target_statuses) < len(target_subtasks):
-        target_statuses.append(SubtaskStatus.PENDING)
-    if len(target_statuses) > len(target_subtasks):
-        del target_statuses[len(target_subtasks) :]
-    index = subtask_index if subtask_index is not None else None
-    if index is None or index < 0 or index >= len(target_subtasks):
-        if subtask is None:
-            return
-        matches = [candidate for candidate, value in enumerate(target_subtasks) if value == subtask]
-        if len(matches) != 1:
-            return
-        index = matches[0]
-    elif subtask is not None and target_subtasks[index] != subtask:
-        matches = [candidate for candidate, value in enumerate(target_subtasks) if value == subtask]
-        if len(matches) != 1:
-            return
-        index = matches[0]
-    target_statuses[index] = SubtaskStatus(monitor_status.value)
-
-
-def _selected_subtask_status(
-    subtasks: list[str],
-    subtask_statuses: list[SubtaskStatus],
-    current_subtask: str | None,
-    subtask_index: int | None,
-) -> SubtaskStatus | None:
-    index = _selected_subtask_index(subtasks, current_subtask, subtask_index)
-    if index is None:
-        return None
-    return subtask_statuses[index] if index < len(subtask_statuses) else SubtaskStatus.PENDING
-
-
-def _advance_current_after_completed_success(state: AgenticSessionState) -> None:
-    if _active_execution_running(state.active_execution):
-        return
-    index = _selected_subtask_index(state.subtasks, state.current_subtask, state.subtask_index)
-    if index is None or index >= len(state.subtask_statuses):
-        return
-    if state.subtask_statuses[index] is not SubtaskStatus.SUCCESS:
-        return
-
-    next_index = _next_pending_subtask_index(state.subtask_statuses, start_after=index)
-    if next_index is None:
-        state.current_subtask = None
-        state.subtask_index = None
-    else:
-        state.current_subtask = state.subtasks[next_index]
-        state.subtask_index = next_index
-    if state.monitor_status is MonitorStatus.SUCCESS:
-        state.monitor_status = None
-        state.monitor_error = None
-
-
-def _selected_subtask_index(
-    subtasks: list[str],
-    current_subtask: str | None,
-    subtask_index: int | None,
-) -> int | None:
-    index = subtask_index
-    if index is not None and 0 <= index < len(subtasks):
-        if current_subtask is None or subtasks[index] == current_subtask:
-            return index
-    if current_subtask is None:
-        return None
-    matches = [candidate for candidate, subtask in enumerate(subtasks) if subtask == current_subtask]
-    if len(matches) != 1:
-        return None
-    return matches[0]
-
-
-def _next_pending_subtask_index(
-    subtask_statuses: list[SubtaskStatus],
-    *,
-    start_after: int,
-) -> int | None:
-    for index in range(start_after + 1, len(subtask_statuses)):
-        if subtask_statuses[index] is SubtaskStatus.PENDING:
-            return index
-    for index, status in enumerate(subtask_statuses):
-        if status is SubtaskStatus.PENDING:
-            return index
-    return None
-
-
-def _all_subtasks_success(state: AgenticSessionState) -> bool:
-    if not state.subtasks or len(state.subtask_statuses) < len(state.subtasks):
-        return False
-    return all(
-        status is SubtaskStatus.SUCCESS
-        for status in state.subtask_statuses[: len(state.subtasks)]
-    )
-
-
-def _has_partial_subtask_progress_with_remaining_work(state: AgenticSessionState) -> bool:
-    if not state.subtasks:
-        return False
-    statuses = list(state.subtask_statuses[: len(state.subtasks)])
-    if not any(status is SubtaskStatus.SUCCESS for status in statuses):
-        return False
-    return len(statuses) < len(state.subtasks) or any(
-        status is not SubtaskStatus.SUCCESS for status in statuses
-    )
 
 
 def _active_execution_running(active_execution: ActiveExecution | None) -> bool:
@@ -1894,12 +1143,6 @@ def _finish_active_execution(
     state.active_execution.status = monitor_status.value
     state.active_execution.error = monitor_error
     state.active_execution.updated_at = time.time()
-    _mark_subtask_status(
-        state,
-        state.active_execution.subtask,
-        state.active_execution.subtask_index,
-        monitor_status,
-    )
     state.awaiting_monitor = False
 
 

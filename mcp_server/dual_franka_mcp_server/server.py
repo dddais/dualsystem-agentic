@@ -23,6 +23,7 @@ Environment variables:
     DUAL_FRANKA_EXECUTE_METHOD   Execute method (default: POST)
     DUAL_FRANKA_STOP_PATH        Stop path (default: /control/stop)
     DUAL_FRANKA_RESET_PATH       Reset path (default: /control/reset)
+    DUAL_FRANKA_ENABLE_RESET     Set true to expose reset_task (default: false)
     DUAL_FRANKA_ESTOP_PATH       Emergency stop path (default: /control/emergency_stop)
     DUAL_FRANKA_TIMEOUT_S        HTTP timeout seconds (default: 30)
     DUAL_FRANKA_UNKNOWN_STATUS   Fallback monitor status (default: running)
@@ -58,6 +59,7 @@ EXECUTE_METHOD = os.environ.get("DUAL_FRANKA_EXECUTE_METHOD") or "POST"
 STOP_PATH = os.environ.get("DUAL_FRANKA_STOP_PATH") or "/control/stop"
 RESET_PATH = os.environ.get("DUAL_FRANKA_RESET_PATH") or "/control/reset"
 ESTOP_PATH = os.environ.get("DUAL_FRANKA_ESTOP_PATH") or "/control/emergency_stop"
+ENABLE_RESET = (os.environ.get("DUAL_FRANKA_ENABLE_RESET") or "").lower() in {"1", "true", "yes", "on"}
 
 _LAST_EXECUTION: dict[str, Any] = {}
 
@@ -135,11 +137,6 @@ async def list_tools() -> list[types.Tool]:
             description="Stop the current dual-Franka task over HTTP.",
             inputSchema={"type": "object", "required": [], "properties": {}},
         ),
-        # types.Tool(
-        #     name="reset_task",
-        #     description="Reset dual-Franka task/arms over HTTP.",
-        #     inputSchema={"type": "object", "required": [], "properties": {}},
-        # ),
         types.Tool(
             name="emergency_stop",
             description="Emergency stop the dual-Franka runtime over HTTP.",
@@ -147,6 +144,14 @@ async def list_tools() -> list[types.Tool]:
         ),
         ]
     )
+    if ENABLE_RESET:
+        tools.append(
+            types.Tool(
+                name="reset_task",
+                description="Reset dual-Franka task/arms over HTTP.",
+                inputSchema={"type": "object", "required": [], "properties": {}},
+            )
+        )
     return tools
 
 
@@ -170,7 +175,7 @@ async def _dispatch(client: httpx.AsyncClient, name: str, arguments: dict) -> di
         return await _execute(client, arguments)
     if name == "stop_task":
         return await _request(client, "POST", STOP_PATH)
-    if name == "reset_task":
+    if name == "reset_task" and ENABLE_RESET:
         return await _request(client, "POST", RESET_PATH)
     if name == "emergency_stop":
         return await _request(client, "POST", ESTOP_PATH)
@@ -296,10 +301,6 @@ def _hydrate_monitor_arguments(arguments: dict) -> dict:
         payload["monitor_id"] = _LAST_EXECUTION["monitor_id"]
     if "task_id" not in payload and _LAST_EXECUTION.get("task_id"):
         payload["task_id"] = _LAST_EXECUTION["task_id"]
-    if "subtask" not in payload and _LAST_EXECUTION.get("subtask"):
-        payload["subtask"] = _LAST_EXECUTION["subtask"]
-    if "subtask_index" not in payload and _LAST_EXECUTION.get("subtask_index") is not None:
-        payload["subtask_index"] = _LAST_EXECUTION["subtask_index"]
     return payload
 
 
@@ -310,12 +311,15 @@ def _build_execute_payload(arguments: dict) -> dict:
         "prompt": subtask,
         "instruction": subtask,
     }
-    for key in ("task", "left_arm", "right_arm", "bimanual_mode", "metadata", "options"):
+    for key in ("task", "subtask_index", "left_arm", "right_arm", "bimanual_mode", "metadata", "options"):
         value = arguments.get(key)
         if value is not None:
             payload[key] = value
     if isinstance(arguments.get("payload"), dict):
         payload.update(arguments["payload"])
+    payload["subtask"] = subtask
+    if arguments.get("subtask_index") is not None:
+        payload["subtask_index"] = arguments["subtask_index"]
     return payload
 
 

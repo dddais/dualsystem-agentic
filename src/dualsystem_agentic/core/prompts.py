@@ -19,6 +19,14 @@ Planning protocol:
   "subtask_index". You MAY REVISE the plan (return an updated full "subtasks" list)
   when needed, e.g. a subtask failed, the scene differs from expectation, or extra
   steps are required. Omit "subtasks" if the plan is unchanged.
+- If you revise "subtasks", "subtask_index" is 0-based within the revised list
+  you return, and "current_subtask" must exactly match that list item.
+- Completed subtasks are shown with status "success". Do NOT remove completed
+  subtasks just to make progress; keep the plan stable and advance
+  "subtask_index" to the next pending item. Only add/remove/reorder subtasks when
+  the environment or task requirements actually changed.
+- If Active execution is running, keep the existing "subtasks" list unchanged and
+  keep "current_subtask" on the active execution until a terminal monitor event.
 
 Executable subtask constraints:
 - Every item in "subtasks" must be a concrete physical robot action that can be
@@ -30,13 +38,15 @@ Executable subtask constraints:
 - Do NOT write conditional subtasks such as "if items are present..." or vague
   subtasks such as "organize the items".
 - Good subtasks:
-  - "Pick up the pink cup and place it in the dish rack."
-  - "Pick up the blue bowl and place it in the dish rack."
+  - "Pick up the red bottle and place it on the black desk."
+  - "Pick up the carrot and place it on the plate."
 - Bad subtasks:
   - "Check the status of the current task."
   - "Analyze the image to identify all items."
   - "If items are present, move them to the dish rack."
   - "Perform a final check to ensure all items are organized."
+- Do NOT copy object names, colors, or targets from these examples. Use only the
+  current task, attached images, and structured scene graph when one is present.
 
 Tool use:
 - Call ONLY tools from the "Available tools" list, by the exact canonical name
@@ -59,8 +69,9 @@ Tool use:
   observe, update the plan, wait, cancel/stop with an available safety tool, or
   react to monitor events. Set "should_execute": false while waiting/observing.
 - A monitor_success event means the active action reached a terminal success; now
-  advance to the next subtask or complete the task. A monitor_failed or
-  monitor_timeout event means retry, replan, cancel, ask for help, or abort.
+  advance to the next pending subtask or complete the task. Do NOT execute the
+  same successful subtask again. A monitor_failed or monitor_timeout event means
+  retry, replan, cancel, ask for help, or abort.
 - Set "task_complete": true only when the whole task is finished AND there is no
   running Active execution.
 
@@ -114,6 +125,7 @@ def _format_session_memory(planner_input: AgenticPlannerInput) -> str:
         plan_lines = _format_plan(
             planner_input.subtasks,
             planner_input.subtask_index,
+            planner_input.subtask_statuses,
         ).splitlines()
         lines.extend(f"  {line}" for line in plan_lines)
     else:
@@ -217,12 +229,21 @@ def _format_events(planner_input: AgenticPlannerInput) -> str:
     return "\n".join(lines)
 
 
-def _format_plan(items: list[str], current_index: int | None) -> str:
+def _format_plan(
+    items: list[str],
+    current_index: int | None,
+    statuses: list[object] | None = None,
+) -> str:
     lines = []
     for index, item in enumerate(items):
+        status = _status_value(statuses[index]) if statuses and index < len(statuses) else "pending"
         marker = " <- current" if index == current_index else ""
-        lines.append(f"  {index}. {item}{marker}")
+        lines.append(f"  {index}. [{status}] {item}{marker}")
     return "\n".join(lines)
+
+
+def _status_value(value: object) -> str:
+    return str(getattr(value, "value", value))
 
 
 def _format_json(value: object) -> str:

@@ -18,6 +18,15 @@ class MonitorStatus(str, Enum):
     FAILED = "failed"
 
 
+class SubtaskStatus(str, Enum):
+    """Plan-level status for each subtask in the current plan."""
+
+    PENDING = "pending"
+    RUNNING = "running"
+    SUCCESS = "success"
+    FAILED = "failed"
+
+
 class AgenticPhase(str, Enum):
     """High-level controller phases for the agentic loop."""
 
@@ -42,6 +51,21 @@ def normalize_monitor_status(value: str | MonitorStatus) -> MonitorStatus:
         raise ValueError(
             f"Unsupported monitor status: {value!r}. Expected one of: {allowed}"
         ) from exc
+
+
+def normalize_subtask_status(value: str | SubtaskStatus | MonitorStatus | None) -> SubtaskStatus:
+    """Return a validated plan-level subtask status."""
+    if isinstance(value, SubtaskStatus):
+        return value
+    if isinstance(value, MonitorStatus):
+        return SubtaskStatus(value.value)
+    normalized = str(value or SubtaskStatus.PENDING.value).strip().lower()
+    if normalized in {"queued", "todo", "not_started", "not-started"}:
+        normalized = SubtaskStatus.PENDING.value
+    try:
+        return SubtaskStatus(normalized)
+    except ValueError:
+        return SubtaskStatus.PENDING
 
 
 def normalize_agentic_phase(value: str | AgenticPhase) -> AgenticPhase:
@@ -225,6 +249,7 @@ class AgenticPlannerInput:
     current_subtask: str | None = None
     subtask_index: int | None = None
     subtasks: list[str] = field(default_factory=list)
+    subtask_statuses: list[SubtaskStatus] = field(default_factory=list)
     monitor_status: MonitorStatus | None = None
     monitor_error: str | None = None
     active_execution: ActiveExecution | None = None
@@ -269,6 +294,7 @@ class AgenticSessionState:
     subtasks: list[str] = field(default_factory=list)
     current_subtask: str | None = None
     subtask_index: int | None = None
+    subtask_statuses: list[SubtaskStatus] = field(default_factory=list)
     monitor_status: MonitorStatus | None = None
     monitor_error: str | None = None
     awaiting_monitor: bool = False
@@ -292,6 +318,7 @@ class AgenticSessionState:
                 "subtasks": self.subtasks,
                 "current_subtask": self.current_subtask,
                 "subtask_index": self.subtask_index,
+                "subtask_statuses": self.subtask_statuses,
                 "monitor_status": self.monitor_status,
                 "monitor_error": self.monitor_error,
                 "awaiting_monitor": self.awaiting_monitor,
@@ -318,6 +345,10 @@ class AgenticSessionState:
             subtasks=[str(item) for item in data.get("subtasks", []) if str(item)],
             current_subtask=_optional_str(data.get("current_subtask")),
             subtask_index=_optional_int(data.get("subtask_index")),
+            subtask_statuses=[
+                normalize_subtask_status(str(item))
+                for item in data.get("subtask_statuses", [])
+            ],
             monitor_status=normalize_monitor_status(monitor_status) if monitor_status else None,
             monitor_error=_optional_str(data.get("monitor_error")),
             awaiting_monitor=bool(data.get("awaiting_monitor", False)),
@@ -396,6 +427,7 @@ class AgenticStepResult:
     executor_output: ExecutorOutput | None = None
     current_subtask: str | None = None
     subtask_index: int | None = None
+    subtask_statuses: list[SubtaskStatus] = field(default_factory=list)
     monitor_status: MonitorStatus | None = None
     monitor_error: str | None = None
     active_execution: ActiveExecution | None = None

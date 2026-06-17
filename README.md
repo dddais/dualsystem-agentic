@@ -56,7 +56,7 @@ robot-runtime --port 8767
 | `vlm/` | `VLMPlanner` protocol + `OpenAICompatibleVLMPlanner` (API) + `LocalQwenVLMPlanner` (local) + `CallablePlanner`. |
 | `mcp/` | `MCPToolClient` protocol, `MCPServerConnection` (one server), `MCPServiceManager` (namespace routing over a background loop), `FakeMCPToolClient` (in-process). |
 | `executor/` | `ExecutorClient` protocol + `HTTPExecutorClient`. |
-| `io/dataloader.py` | `DataLoader` protocol + `HTTPDataLoader` (bridge camera endpoint) + `MockDataLoader` (synthetic) + `StaticDataLoader` (CLI `--image`). |
+| `io/dataloader.py` | `DataLoader` protocol + `HTTPDataLoader` (camera/runtime HTTP endpoint) + `MockDataLoader` (synthetic) + `StaticDataLoader` (CLI `--image`). |
 | `app.py` | Config-driven app builders shared by CLI and robot deployment scripts. |
 | `runtime.py` | `OnlineAgentRuntime`: keeps components alive, waits for user tasks, resets session state per task, and returns to waiting after completion/failure. |
 | `interaction.py` | `InteractionLayer` protocol + dependency-free `ConsoleInteractionLayer` / `TuiInteractionLayer`. |
@@ -70,6 +70,15 @@ ordered `subtasks` list. On every later step it **selects** the current subtask 
 that list by `subtask_index`, and may **revise** the list (return a new full
 `subtasks`) when a subtask fails or the plan needs to change. Selecting by index
 alone is enough — `current_subtask` defaults to `subtasks[subtask_index]`.
+
+Completed subtasks stay in the plan and are shown back to the planner through the
+parallel `subtask_statuses` list (`pending` / `running` / `success` / `failed`).
+Normal progress means advancing `subtask_index` to the next `pending` item, not
+deleting completed prefixes. The loop still accepts a real replan when the scene
+or task requirements change, but rejects plan edits while an `active_execution` is
+still `running` and rejects revised plans that drop already `success` items. When
+all existing subtasks are `success`, the planner should set `task_complete=true`
+instead of inventing new work.
 
 The planner returns a single JSON object. One code path works for both local and
 API models. Native function-calling can be added later behind the same `VLMPlanner`
@@ -191,7 +200,7 @@ DataLoader carries visual observations).
 
 | Provider | Config key | Use case |
 |----------|-----------|----------|
-| `http` | `dataloader.url` | Poll a camera HTTP endpoint (e.g. x2robot bridge `/cameras/concatenated`). |
+| `http` | `dataloader.url` | Poll a camera/runtime HTTP endpoint, e.g. Dual-Franka runtime `/observations/latest` or x2robot `/cameras/concatenated`. |
 | `mock` | — | Generate synthetic JPEG frames for offline testing. |
 | `static` | — | Wrap CLI `--image` files (backward compatible). |
 | `none` | — | No automatic images; VLM is text-only. |

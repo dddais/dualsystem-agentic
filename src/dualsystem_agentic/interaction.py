@@ -8,6 +8,8 @@ from typing import Protocol, TextIO
 
 from dualsystem_agentic.core.types import AgenticStepResult
 
+_PlanDisplayKey = tuple[tuple[str, str, str], ...]
+
 
 class InteractionLayer(Protocol):
     """User-facing interaction contract for online runtime loops."""
@@ -66,7 +68,7 @@ class ConsoleInteractionLayer:
         self.output_stream = output_stream or sys.stdout
         self.show_raw_json = show_raw_json
         self.prompt = prompt
-        self._displayed_subtasks: tuple[str, ...] = ()
+        self._displayed_subtasks: _PlanDisplayKey = ()
 
     def read_task(self) -> str | None:
         while True:
@@ -155,7 +157,7 @@ class TuiInteractionLayer:
         self._curses = None
         self._fallback: ConsoleInteractionLayer | None = None
         self._lines: list[str] = []
-        self._displayed_subtasks: tuple[str, ...] = ()
+        self._displayed_subtasks: _PlanDisplayKey = ()
 
     def read_task(self) -> str | None:
         if not self._ensure_started():
@@ -358,20 +360,52 @@ class TuiInteractionLayer:
 
 def _format_plan_update(
     result: AgenticStepResult,
-    displayed_subtasks: tuple[str, ...],
-) -> tuple[str, tuple[str, ...]] | None:
-    subtasks = tuple(result.planner_output.subtasks)
-    if not subtasks or subtasks == displayed_subtasks:
+    displayed_subtasks: _PlanDisplayKey,
+) -> tuple[str, _PlanDisplayKey] | None:
+    source_subtasks = result.planner_output.subtasks or result.planner_input.subtasks
+    subtasks = tuple(source_subtasks)
+    if not subtasks:
         return None
-    label = "subtask_list initialized:" if not displayed_subtasks else "subtask_list updated:"
+    statuses = result.subtask_statuses or result.planner_input.subtask_statuses
+    status_values = tuple(
+        _status_value(statuses[index]) if index < len(statuses) else "pending"
+        for index in range(len(subtasks))
+    )
     current_index = result.subtask_index
     if current_index is None:
         current_index = result.planner_output.subtask_index
+    current_index = _display_current_index(current_index, status_values)
+    display_key = tuple(
+        (subtask, status_values[index], "current" if index == current_index else "")
+        for index, subtask in enumerate(subtasks)
+    )
+    if display_key == displayed_subtasks:
+        return None
+    label = "subtask_list initialized:" if not displayed_subtasks else "subtask_list updated:"
     lines = [label]
     for index, subtask in enumerate(subtasks):
+        status = status_values[index]
         marker = " <- current" if index == current_index else ""
-        lines.append(f"  {index}. {subtask}{marker}")
-    return "\n".join(lines), subtasks
+        lines.append(f"  {index}. [{status}] {subtask}{marker}")
+    return "\n".join(lines), display_key
+
+
+def _status_value(value: object) -> str:
+    return str(getattr(value, "value", value))
+
+
+def _display_current_index(current_index: object, statuses: tuple[str, ...]) -> object:
+    if not isinstance(current_index, int):
+        return current_index
+    if current_index < 0 or current_index >= len(statuses) or statuses[current_index] != "success":
+        return current_index
+    for index in range(current_index + 1, len(statuses)):
+        if statuses[index] == "pending":
+            return index
+    for index, status in enumerate(statuses):
+        if status == "pending":
+            return index
+    return current_index
 
 
 def _format_tool_error(result: AgenticStepResult) -> str:

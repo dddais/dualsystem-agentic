@@ -9,6 +9,7 @@ from collections.abc import Iterable
 
 from dualsystem_agentic import (
     AgenticRobotLoop,
+    AgenticSessionState,
     AgenticStepResult,
     CallablePlanner,
     ConsoleInteractionLayer,
@@ -19,7 +20,16 @@ from dualsystem_agentic import (
     OnlineTaskSummary,
 )
 from dualsystem_agentic.io.dataloader import StaticDataLoader
-from dualsystem_agentic.core.types import AgenticPlannerInput, AgenticPlannerOutput, ImageInput, ToolResult
+from dualsystem_agentic.runtime import _monitor_timeout_event
+from dualsystem_agentic.core.types import (
+    ActiveExecution,
+    AgenticPlannerInput,
+    AgenticPlannerOutput,
+    MonitorStatus,
+    ImageInput,
+    SubtaskStatus,
+    ToolResult,
+)
 from dualsystem_agentic.run_logger import JsonlRunLogger
 
 
@@ -104,11 +114,22 @@ def _loop(script_fn) -> AgenticRobotLoop:
     return AgenticRobotLoop(CallablePlanner(script_fn), _tool_client(), RecordingExecutor())
 
 
-def _step_with_plan(step_index: int, subtasks: list[str], subtask_index: int = 0) -> AgenticStepResult:
+def _step_with_plan(
+    step_index: int,
+    subtasks: list[str],
+    subtask_index: int = 0,
+    subtask_statuses: list[SubtaskStatus] | None = None,
+) -> AgenticStepResult:
     return AgenticStepResult(
         task="clean the table",
         step_index=step_index,
-        planner_input=AgenticPlannerInput(task="clean the table", step_index=step_index),
+        planner_input=AgenticPlannerInput(
+            task="clean the table",
+            step_index=step_index,
+            subtasks=subtasks,
+            subtask_index=subtask_index,
+            subtask_statuses=subtask_statuses or [],
+        ),
         planner_output=AgenticPlannerOutput(
             raw_output=json.dumps({"subtasks": subtasks, "subtask_index": subtask_index}),
             subtasks=subtasks,
@@ -116,6 +137,7 @@ def _step_with_plan(step_index: int, subtasks: list[str], subtask_index: int = 0
         ),
         current_subtask=subtasks[subtask_index],
         subtask_index=subtask_index,
+        subtask_statuses=subtask_statuses or [],
     )
 
 
@@ -333,6 +355,33 @@ def test_online_runtime_stops_after_max_monitor_polls():
     assert summaries[0].stop_reason == "max_monitor_polls"
     assert [step.vlm_called for step in interaction.steps] == [True, False, False]
     assert interaction.steps[-1].events[-1].event_type == "monitor_timeout"
+    assert interaction.steps[-1].subtask_statuses == [SubtaskStatus.FAILED]
+
+
+def test_monitor_timeout_marks_active_subtask_failed():
+    state = AgenticSessionState(
+        task="task",
+        subtasks=["pick cup", "place cup"],
+        subtask_statuses=[SubtaskStatus.RUNNING, SubtaskStatus.PENDING],
+        current_subtask="pick cup",
+        subtask_index=0,
+        monitor_status=MonitorStatus.RUNNING,
+        awaiting_monitor=True,
+        active_execution=ActiveExecution(
+            subtask="pick cup",
+            subtask_index=0,
+            execution_id="exec-1",
+            monitor_id="mon-1",
+        ),
+    )
+
+    event = _monitor_timeout_event(state, 3)
+
+    assert event.event_type == "monitor_timeout"
+    assert state.monitor_status is MonitorStatus.FAILED
+    assert state.subtask_statuses == [SubtaskStatus.FAILED, SubtaskStatus.PENDING]
+    assert state.active_execution is not None
+    assert state.active_execution.status == "failed"
 
 
 def test_online_runtime_monitor_timeout_event_triggers_replan_when_budget_remains():
@@ -438,13 +487,53 @@ def test_console_interaction_prints_subtask_list_when_initialized_or_updated():
     interaction.show_task_started("clean the table", "session_0001")
     interaction.show_step(_step_with_plan(0, ["pick cup", "place cup"], 0))
     interaction.show_step(_step_with_plan(1, ["pick cup", "place cup"], 0))
-    interaction.show_step(_step_with_plan(2, ["pick cup", "place cup", "wipe table"], 2))
+    interaction.show_step(
+        _step_with_plan(
+            2,
+            ["pick cup", "place cup", "wipe table"],
+            2,
+            [SubtaskStatus.SUCCESS, SubtaskStatus.PENDING, SubtaskStatus.PENDING],
+        )
+    )
 
     text = output.getvalue()
     assert text.count("subtask_list initialized:") == 1
     assert text.count("subtask_list updated:") == 1
-    assert "  0. pick cup <- current" in text
-    assert "  2. wipe table <- current" in text
+    assert "  0. [pending] pick cup <- current" in text
+    assert "  0. [success] pick cup" in text
+    assert "  2. [pending] wipe table <- current" in text
+
+
+def test_console_interaction_prints_update_when_current_advances_after_success():
+    output = io.StringIO()
+    interaction = ConsoleInteractionLayer(
+        input_stream=io.StringIO(),
+        output_stream=output,
+    )
+
+    interaction.show_task_started("clean the table", "session_0001")
+    interaction.show_step(
+        _step_with_plan(
+            0,
+            ["pick cup", "place cup"],
+            0,
+            [SubtaskStatus.RUNNING, SubtaskStatus.PENDING],
+        )
+    )
+    interaction.show_step(
+        _step_with_plan(
+            1,
+            ["pick cup", "place cup"],
+            0,
+            [SubtaskStatus.SUCCESS, SubtaskStatus.PENDING],
+        )
+    )
+
+    text = output.getvalue()
+    assert text.count("subtask_list initialized:") == 1
+    assert text.count("subtask_list updated:") == 1
+    assert "  0. [running] pick cup <- current" in text
+    assert "  1. [pending] place cup <- current" in text
 
 
 def test_online_runtime_jsonl_logger_records_each_task_session(tmp_path):

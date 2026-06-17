@@ -15,6 +15,7 @@ from dualsystem_agentic import (
     ExecutorOutput,
     FakeMCPToolClient,
     MonitorStatus,
+    SubtaskStatus,
 )
 
 
@@ -371,6 +372,46 @@ def test_running_execution_blocks_task_complete():
     assert state.active_execution.status == "running"
 
 
+def test_task_complete_is_rejected_when_plan_has_pending_subtasks():
+    planner = _planner([json.dumps({"task_complete": True})])
+    state = AgenticSessionState(
+        task="task",
+        subtasks=["pick cup", "place cup"],
+        subtask_statuses=[SubtaskStatus.SUCCESS, SubtaskStatus.PENDING],
+        current_subtask="place cup",
+        subtask_index=1,
+        reason_requested=True,
+    )
+    loop = AgenticRobotLoop(planner, _tool_client(), RecordingExecutor())
+
+    result, state = loop.step("task", state)
+
+    assert result.task_complete is False
+    assert result.parse_ok is False
+    assert "incomplete subtask" in (result.parse_error or "")
+    assert result.events[-1].event_type == "planner_inconsistent"
+    assert state.phase is AgenticPhase.ERROR
+    assert state.reason_requested is True
+
+
+def test_task_complete_is_allowed_before_subtask_success_progress():
+    planner = _planner([json.dumps({"task_complete": True})])
+    state = AgenticSessionState(
+        task="task",
+        subtasks=["pick cup"],
+        current_subtask="pick cup",
+        subtask_index=0,
+        reason_requested=True,
+    )
+    loop = AgenticRobotLoop(planner, _tool_client(), RecordingExecutor())
+
+    result, state = loop.step("task", state)
+
+    assert result.task_complete is True
+    assert result.parse_ok is True
+    assert state.phase is AgenticPhase.DONE
+
+
 def test_wait_decision_during_active_execution_does_not_execute_again():
     planner = _planner([json.dumps({"decision": "wait"})])
     executor = RecordingExecutor()
@@ -429,6 +470,467 @@ def test_repeated_plan_without_execute_is_rejected_after_plan_exists():
     assert result.events[-1].event_type == "planner_noop"
     assert state.reason_requested is True
     assert executor.calls == []
+
+
+def test_revised_plan_current_subtask_must_match_selected_index():
+    client = FakeMCPToolClient()
+    execute_calls = []
+    client.register(
+        "execute",
+        lambda args: execute_calls.append(dict(args)) or {"executed": True},
+        namespace="demo_robot",
+    )
+    planner = _planner(
+        [
+            json.dumps(
+                {
+                    "decision": "replan",
+                    "tool_calls": [
+                        {
+                            "namespace": "demo_robot",
+                            "name": "execute",
+                            "arguments": {"subtask": "pick bowl"},
+                        }
+                    ],
+                    "subtasks": ["pick bowl", "pick spoon"],
+                    "subtask_index": 1,
+                    "current_subtask": "pick bowl",
+                }
+            )
+        ]
+    )
+    state = AgenticSessionState(
+        task="task",
+        subtasks=["pick cup", "pick bowl", "pick spoon"],
+        current_subtask="pick cup",
+        subtask_index=0,
+        monitor_status=MonitorStatus.SUCCESS,
+        active_execution=ActiveExecution(subtask="pick cup", subtask_index=0, status="success"),
+    )
+    loop = AgenticRobotLoop(planner, client, RecordingExecutor())
+
+    result, state = loop.step("task", state, reason_interval_s=0)
+
+    assert result.parse_ok is True
+    assert result.current_subtask == "pick bowl"
+    assert result.subtask_index == 0
+    assert state.subtask_index == 0
+    assert execute_calls == [{"subtask": "pick bowl", "subtask_index": 0}]
+
+
+def test_reconciled_subtask_index_is_passed_to_execute_tool():
+    client = FakeMCPToolClient()
+    execute_calls = []
+    client.register(
+        "execute",
+        lambda args: execute_calls.append(dict(args)) or {"executed": True},
+        namespace="demo_robot",
+    )
+    planner = _planner(
+        [
+            json.dumps(
+                {
+                    "decision": "replan",
+                    "tool_calls": [
+                        {
+                            "namespace": "demo_robot",
+                            "name": "execute",
+                            "arguments": {
+                                "subtask": "pick bowl",
+                                "subtask_index": 1,
+                                "payload": {"subtask_index": 1},
+                            },
+                        }
+                    ],
+                    "subtasks": ["pick bowl", "pick spoon"],
+                    "subtask_index": 1,
+                    "current_subtask": "pick bowl",
+                }
+            )
+        ]
+    )
+    state = AgenticSessionState(
+        task="task",
+        subtasks=["pick cup", "pick bowl", "pick spoon"],
+        current_subtask="pick cup",
+        subtask_index=0,
+        monitor_status=MonitorStatus.SUCCESS,
+        active_execution=ActiveExecution(subtask="pick cup", subtask_index=0, status="success"),
+    )
+    loop = AgenticRobotLoop(planner, client, RecordingExecutor())
+
+    result, _ = loop.step("task", state, reason_interval_s=0)
+
+    assert result.parse_ok is True
+    assert execute_calls == [
+        {"subtask": "pick bowl", "subtask_index": 0, "payload": {"subtask_index": 1}}
+    ]
+
+
+def test_revised_plan_current_subtask_mismatch_is_rejected_when_not_reconcilable():
+    client = FakeMCPToolClient()
+    client.register("execute", lambda args: {"executed": True}, namespace="demo_robot")
+    planner = _planner(
+        [
+            json.dumps(
+                {
+                    "decision": "replan",
+                    "tool_calls": [
+                        {
+                            "namespace": "demo_robot",
+                            "name": "execute",
+                            "arguments": {"subtask": "pick bowl"},
+                        }
+                    ],
+                    "subtasks": ["pick bowl", "pick spoon"],
+                    "subtask_index": 1,
+                    "current_subtask": "pick plate",
+                }
+            )
+        ]
+    )
+    state = AgenticSessionState(
+        task="task",
+        subtasks=["pick cup", "pick bowl", "pick spoon"],
+        current_subtask="pick cup",
+        subtask_index=0,
+        monitor_status=MonitorStatus.SUCCESS,
+        active_execution=ActiveExecution(subtask="pick cup", subtask_index=0, status="success"),
+    )
+    loop = AgenticRobotLoop(planner, client, RecordingExecutor())
+
+    result, state = loop.step("task", state, reason_interval_s=0)
+
+    assert result.parse_ok is False
+    assert "current_subtask is not in the subtask plan" in (result.parse_error or "")
+    assert result.events[-1].event_type == "planner_inconsistent"
+    assert state.current_subtask == "pick cup"
+
+
+def test_execute_subtask_must_match_current_subtask():
+    client = FakeMCPToolClient()
+    execute_calls = []
+    client.register(
+        "execute",
+        lambda args: execute_calls.append(dict(args)) or {"executed": True},
+        namespace="demo_robot",
+    )
+    planner = _planner(
+        [
+            json.dumps(
+                {
+                    "tool_calls": [
+                        {
+                            "namespace": "demo_robot",
+                            "name": "execute",
+                            "arguments": {"subtask": "pick spoon"},
+                        }
+                    ],
+                    "subtasks": ["pick bowl", "pick spoon"],
+                    "subtask_index": 0,
+                    "current_subtask": "pick bowl",
+                }
+            )
+        ]
+    )
+    loop = AgenticRobotLoop(planner, client, RecordingExecutor())
+
+    result, _ = loop.step("task")
+
+    assert result.parse_ok is False
+    assert "execute tool subtask does not match current_subtask" in (result.parse_error or "")
+    assert execute_calls == []
+
+
+def test_monitor_success_blocks_reexecuting_same_subtask():
+    client = FakeMCPToolClient()
+    execute_calls = []
+    client.register(
+        "execute",
+        lambda args: execute_calls.append(dict(args)) or {"executed": True},
+        namespace="demo_robot",
+    )
+    planner = _planner(
+        [
+            json.dumps(
+                {
+                    "tool_calls": [
+                        {
+                            "namespace": "demo_robot",
+                            "name": "execute",
+                            "arguments": {"subtask": "pick bowl"},
+                        }
+                    ],
+                    "subtasks": ["pick bowl", "pick spoon"],
+                    "subtask_index": 0,
+                    "current_subtask": "pick bowl",
+                }
+            )
+        ]
+    )
+    state = AgenticSessionState(
+        task="task",
+        subtasks=["pick bowl", "pick spoon"],
+        current_subtask="pick bowl",
+        subtask_index=0,
+        monitor_status=MonitorStatus.SUCCESS,
+        active_execution=ActiveExecution(subtask="pick bowl", subtask_index=0, status="success"),
+    )
+    loop = AgenticRobotLoop(planner, client, RecordingExecutor())
+
+    result, _ = loop.step("task", state, reason_interval_s=0)
+
+    assert result.parse_ok is False
+    assert "same subtask that just reached monitor_success" in (result.parse_error or "")
+    assert result.events[-1].event_type == "planner_repeated_success"
+    assert execute_calls == []
+
+
+def test_monitor_success_advances_planner_input_to_next_pending_subtask():
+    client = FakeMCPToolClient()
+    execute_calls = []
+    client.register(
+        "execute",
+        lambda args: execute_calls.append(dict(args)) or {"executed": True},
+        namespace="demo_robot",
+    )
+    planner_inputs = []
+
+    def planner_fn(planner_input):
+        planner_inputs.append(planner_input)
+        return json.dumps(
+            {
+                "tool_calls": [
+                    {
+                        "namespace": "demo_robot",
+                        "name": "execute",
+                        "arguments": {"subtask": planner_input.current_subtask},
+                    }
+                ],
+                "subtask_index": planner_input.subtask_index,
+                "current_subtask": planner_input.current_subtask,
+            }
+        )
+
+    state = AgenticSessionState(
+        task="task",
+        subtasks=["pick bowl", "pick spoon"],
+        subtask_statuses=[SubtaskStatus.SUCCESS, SubtaskStatus.PENDING],
+        current_subtask="pick bowl",
+        subtask_index=0,
+        monitor_status=MonitorStatus.SUCCESS,
+        active_execution=ActiveExecution(subtask="pick bowl", subtask_index=0, status="success"),
+        pending_events=[],
+        reason_requested=True,
+    )
+    loop = AgenticRobotLoop(CallablePlanner(planner_fn), client, RecordingExecutor())
+
+    result, state = loop.step("task", state, reason_interval_s=0)
+
+    assert result.parse_ok is True
+    assert planner_inputs[-1].current_subtask == "pick spoon"
+    assert planner_inputs[-1].subtask_index == 1
+    assert result.current_subtask == "pick spoon"
+    assert result.subtask_index == 1
+    assert execute_calls == [{"subtask": "pick spoon", "subtask_index": 1}]
+    assert state.active_execution is not None
+    assert state.active_execution.subtask == "pick spoon"
+
+
+def test_running_execution_blocks_structural_replan_that_invents_new_subtask():
+    client = FakeMCPToolClient()
+    planner = _planner(
+        [
+            json.dumps(
+                {
+                    "decision": "observe",
+                    "tool_calls": [],
+                    "subtasks": ["pick blue spoon", "pick pink cup"],
+                    "subtask_index": 0,
+                    "current_subtask": "pick blue spoon",
+                    "should_execute": False,
+                }
+            )
+        ]
+    )
+    state = AgenticSessionState(
+        task="clean the table",
+        subtasks=["pick blue bowl", "pick blue spoon"],
+        subtask_statuses=[SubtaskStatus.SUCCESS, SubtaskStatus.RUNNING],
+        current_subtask="pick blue spoon",
+        subtask_index=1,
+        monitor_status=MonitorStatus.RUNNING,
+        awaiting_monitor=True,
+        active_execution=ActiveExecution(
+            subtask="pick blue spoon",
+            subtask_index=1,
+            execution_id="exec-1",
+            monitor_id="mon-1",
+            namespace="demo_robot",
+        ),
+        reason_requested=True,
+    )
+    loop = AgenticRobotLoop(planner, client, RecordingExecutor())
+
+    result, state = loop.step("clean the table", state, reason_interval_s=0)
+
+    assert result.parse_ok is False
+    assert "revise subtasks while active_execution is running" in (result.parse_error or "")
+    assert result.events[-1].event_type == "planner_blocked_replan"
+    assert state.subtasks == ["pick blue bowl", "pick blue spoon"]
+    assert state.subtask_statuses == [SubtaskStatus.SUCCESS, SubtaskStatus.RUNNING]
+    assert state.current_subtask == "pick blue spoon"
+    assert state.subtask_index == 1
+
+
+def test_replan_cannot_remove_successful_subtasks():
+    client = FakeMCPToolClient()
+    planner = _planner(
+        [
+            json.dumps(
+                {
+                    "decision": "replan",
+                    "tool_calls": [],
+                    "subtasks": ["pick blue spoon", "pick pink cup"],
+                    "subtask_index": 0,
+                    "current_subtask": "pick blue spoon",
+                    "should_execute": False,
+                }
+            )
+        ]
+    )
+    state = AgenticSessionState(
+        task="clean the table",
+        subtasks=["pick blue bowl", "pick blue spoon"],
+        subtask_statuses=[SubtaskStatus.SUCCESS, SubtaskStatus.FAILED],
+        current_subtask="pick blue spoon",
+        subtask_index=1,
+        monitor_status=MonitorStatus.FAILED,
+        active_execution=ActiveExecution(subtask="pick blue spoon", subtask_index=1, status="failed"),
+        reason_requested=True,
+    )
+    loop = AgenticRobotLoop(planner, client, RecordingExecutor())
+
+    result, state = loop.step("clean the table", state, reason_interval_s=0)
+
+    assert result.parse_ok is False
+    assert "removed completed subtask" in (result.parse_error or "")
+    assert result.events[-1].event_type == "planner_invalid_replan"
+    assert state.subtasks == ["pick blue bowl", "pick blue spoon"]
+
+
+def test_replan_after_all_success_must_complete_task_instead():
+    client = FakeMCPToolClient()
+    planner = _planner(
+        [
+            json.dumps(
+                {
+                    "decision": "replan",
+                    "tool_calls": [],
+                    "subtasks": ["pick blue spoon", "pick pink cup"],
+                    "subtask_index": 1,
+                    "current_subtask": "pick pink cup",
+                    "should_execute": False,
+                }
+            )
+        ]
+    )
+    state = AgenticSessionState(
+        task="clean the table",
+        subtasks=["pick blue bowl", "pick blue spoon"],
+        subtask_statuses=[SubtaskStatus.SUCCESS, SubtaskStatus.SUCCESS],
+        current_subtask="pick blue spoon",
+        subtask_index=1,
+        monitor_status=MonitorStatus.SUCCESS,
+        active_execution=ActiveExecution(subtask="pick blue spoon", subtask_index=1, status="success"),
+        reason_requested=True,
+    )
+    loop = AgenticRobotLoop(planner, client, RecordingExecutor())
+
+    result, state = loop.step("clean the table", state, reason_interval_s=0)
+
+    assert result.parse_ok is False
+    assert "after all existing subtasks were marked success" in (result.parse_error or "")
+    assert state.subtasks == ["pick blue bowl", "pick blue spoon"]
+
+
+def test_current_subtask_must_belong_to_existing_plan_when_no_revised_subtasks():
+    client = FakeMCPToolClient()
+    planner = _planner(
+        [
+            json.dumps(
+                {
+                    "decision": "execute",
+                    "tool_calls": [
+                        {
+                            "namespace": "demo_robot",
+                            "name": "execute",
+                            "arguments": {"subtask": "pick pink cup"},
+                        }
+                    ],
+                    "current_subtask": "pick pink cup",
+                }
+            )
+        ]
+    )
+    state = AgenticSessionState(
+        task="clean the table",
+        subtasks=["pick blue bowl", "pick blue spoon"],
+        subtask_statuses=[SubtaskStatus.SUCCESS, SubtaskStatus.PENDING],
+        current_subtask="pick blue spoon",
+        subtask_index=1,
+        reason_requested=True,
+    )
+    loop = AgenticRobotLoop(planner, client, RecordingExecutor())
+
+    result, state = loop.step("clean the table", state, reason_interval_s=0)
+
+    assert result.parse_ok is False
+    assert "current_subtask is not in the subtask plan" in (result.parse_error or "")
+    assert state.current_subtask == "pick blue spoon"
+    assert state.subtask_index == 1
+
+
+def test_success_subtask_status_blocks_reexecuting_completed_plan_item():
+    client = FakeMCPToolClient()
+    execute_calls = []
+    client.register(
+        "execute",
+        lambda args: execute_calls.append(dict(args)) or {"executed": True},
+        namespace="demo_robot",
+    )
+    planner = _planner(
+        [
+            json.dumps(
+                {
+                    "tool_calls": [
+                        {
+                            "namespace": "demo_robot",
+                            "name": "execute",
+                            "arguments": {"subtask": "pick cup"},
+                        }
+                    ],
+                    "subtask_index": 0,
+                    "current_subtask": "pick cup",
+                }
+            )
+        ]
+    )
+    state = AgenticSessionState(
+        task="task",
+        subtasks=["pick cup", "pick bowl"],
+        subtask_statuses=[SubtaskStatus.SUCCESS, SubtaskStatus.PENDING],
+        current_subtask="pick cup",
+        subtask_index=0,
+    )
+    loop = AgenticRobotLoop(planner, client, RecordingExecutor())
+
+    result, _ = loop.step("task", state, reason_interval_s=0)
+
+    assert result.parse_ok is False
+    assert "already marked success" in (result.parse_error or "")
+    assert result.events[-1].event_type == "planner_repeated_success"
+    assert execute_calls == []
 
 
 def test_tick_without_reason_skips_vlm_and_preserves_state():
@@ -498,6 +1000,85 @@ def test_execute_status_running_reuses_initial_monitor_feedback():
     assert state.active_execution.execution_id == "exec-1"
     assert state.active_execution.monitor_id == "mon-1"
     assert state.active_execution.status == "running"
+
+
+def test_execute_status_success_preserves_terminal_monitor_state():
+    client = FakeMCPToolClient()
+    client.register(
+        "execute",
+        lambda args: {
+            "executed": True,
+            "status": "success",
+            "subtask": args.get("subtask"),
+            "execution_id": "exec-1",
+            "monitor_id": "mon-1",
+        },
+        namespace="demo_robot",
+    )
+    planner = _planner(
+        [
+            json.dumps(
+                {
+                    "tool_calls": [
+                        {"namespace": "demo_robot", "name": "execute", "arguments": {"subtask": "pick cup"}}
+                    ],
+                    "current_subtask": "pick cup",
+                }
+            )
+        ]
+    )
+    loop = AgenticRobotLoop(planner, client, RecordingExecutor())
+
+    result, state = loop.step("task")
+
+    assert result.parse_ok is True
+    assert result.monitor_status is MonitorStatus.SUCCESS
+    assert state.monitor_status is MonitorStatus.SUCCESS
+    assert state.awaiting_monitor is False
+    assert state.active_execution is not None
+    assert state.active_execution.status == "success"
+    assert result.events[-1].event_type == "monitor_success"
+
+
+def test_execute_status_failed_preserves_terminal_monitor_state():
+    client = FakeMCPToolClient()
+    client.register(
+        "execute",
+        lambda args: {
+            "executed": False,
+            "status": "failed",
+            "subtask": args.get("subtask"),
+            "execution_id": "exec-1",
+            "monitor_id": "mon-1",
+            "error": "startup failed",
+        },
+        namespace="demo_robot",
+    )
+    planner = _planner(
+        [
+            json.dumps(
+                {
+                    "tool_calls": [
+                        {"namespace": "demo_robot", "name": "execute", "arguments": {"subtask": "pick cup"}}
+                    ],
+                    "current_subtask": "pick cup",
+                }
+            )
+        ]
+    )
+    loop = AgenticRobotLoop(planner, client, RecordingExecutor())
+
+    result, state = loop.step("task")
+
+    assert result.parse_ok is True
+    assert result.monitor_status is MonitorStatus.FAILED
+    assert result.monitor_error == "startup failed"
+    assert state.monitor_status is MonitorStatus.FAILED
+    assert state.awaiting_monitor is False
+    assert state.active_execution is not None
+    assert state.active_execution.status == "failed"
+    assert state.active_execution.error == "startup failed"
+    assert result.events[-1].event_type == "monitor_failed"
 
 
 def test_monitor_poll_is_skipped_without_active_execution_even_with_current_subtask():
@@ -582,6 +1163,53 @@ def test_planner_monitor_call_gets_active_execution_ids():
     assert state.awaiting_monitor is True
 
 
+def test_monitor_result_mismatched_ids_is_rejected():
+    client = FakeMCPToolClient()
+    client.register(
+        "monitor",
+        lambda args: {
+            "status": "success",
+            "subtask": args.get("subtask"),
+            "execution_id": args.get("execution_id"),
+            "monitor_id": "mon-2",
+        },
+        namespace="demo_robot",
+    )
+    planner = _planner(
+        [
+            json.dumps(
+                {
+                    "tool_calls": [{"namespace": "demo_robot", "name": "monitor", "arguments": {}}],
+                    "current_subtask": "pick cup",
+                    "should_execute": False,
+                }
+            )
+        ]
+    )
+    state = AgenticSessionState(
+        task="task",
+        current_subtask="pick cup",
+        subtask_index=0,
+        awaiting_monitor=True,
+        monitor_namespace="demo_robot",
+        active_execution=ActiveExecution(
+            subtask="pick cup",
+            subtask_index=0,
+            execution_id="exec-1",
+            monitor_id="mon-1",
+            namespace="demo_robot",
+        ),
+    )
+    loop = AgenticRobotLoop(planner, client, RecordingExecutor())
+
+    result, state = loop.step("task", state, reason_interval_s=0)
+
+    assert result.parse_ok is False
+    assert "Monitor monitor_id mismatch" in (result.parse_error or "")
+    assert state.active_execution is not None
+    assert state.active_execution.status == "running"
+
+
 def test_stop_task_result_marks_active_execution_failed_locally():
     client = FakeMCPToolClient()
     client.register("stop_task", lambda args: {"stopped": True}, namespace="demo_robot")
@@ -598,6 +1226,8 @@ def test_stop_task_result_marks_active_execution_failed_locally():
     )
     state = AgenticSessionState(
         task="task",
+        subtasks=["pick cup"],
+        subtask_statuses=[SubtaskStatus.RUNNING],
         current_subtask="pick cup",
         subtask_index=0,
         awaiting_monitor=True,
@@ -617,6 +1247,7 @@ def test_stop_task_result_marks_active_execution_failed_locally():
     assert state.awaiting_monitor is False
     assert state.active_execution is not None
     assert state.active_execution.status == "failed"
+    assert state.subtask_statuses == [SubtaskStatus.FAILED]
 
 
 def test_downstream_executor_auto_monitor_terminal_result_becomes_event():
@@ -927,12 +1558,21 @@ def test_decompose_then_select_by_index_then_revise():
             ),
             # step 1: after monitor success, select index 1 from the existing plan.
             json.dumps({"subtask_index": 1}),
-            # step 2: after the second monitor success, revise and select a new step.
-            json.dumps({"subtasks": ["press the power button", "verify the radio is on"], "subtask_index": 1}),
+            # step 2: after the second monitor success, revise remaining work but keep successes.
+            json.dumps(
+                {
+                    "subtasks": [
+                        "approach the radio",
+                        "press the power button",
+                        "verify the radio is on",
+                    ],
+                    "subtask_index": 2,
+                }
+            ),
         ]
     )
     client = FakeMCPToolClient()
-    monitor_statuses = iter(["success", "success"])
+    monitor_statuses = iter(["running", "success", "running", "success"])
     client.register(
         "monitor",
         lambda args: {"status": next(monitor_statuses), "subtask": args.get("subtask")},
@@ -949,11 +1589,22 @@ def test_decompose_then_select_by_index_then_revise():
     _, state = loop.poll_monitor("turn on the radio and tidy up", state)
     result1, state = loop.step("turn on the radio and tidy up", state, reason_interval_s=0)
     assert result1.current_subtask == "press the power button"
+    assert state.subtasks == ["approach the radio", "press the power button", "tidy the table"]
+    assert state.subtask_statuses == [SubtaskStatus.SUCCESS, SubtaskStatus.RUNNING, SubtaskStatus.PENDING]
     assert executor.calls[-1].subtask == "press the power button"
 
     _, state = loop.poll_monitor("turn on the radio and tidy up", state)
     result2, state = loop.step("turn on the radio and tidy up", state, reason_interval_s=0)
-    assert state.subtasks == ["press the power button", "verify the radio is on"]
+    assert state.subtasks == [
+        "approach the radio",
+        "press the power button",
+        "verify the radio is on",
+    ]
+    assert state.subtask_statuses == [
+        SubtaskStatus.SUCCESS,
+        SubtaskStatus.SUCCESS,
+        SubtaskStatus.RUNNING,
+    ]
     assert result2.current_subtask == "verify the radio is on"
 
 

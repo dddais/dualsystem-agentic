@@ -49,7 +49,7 @@ robot-runtime --port 8767
 | `vlm/` | `VLMPlanner` 协议 + `OpenAICompatibleVLMPlanner`（API）+ `LocalQwenVLMPlanner`（本地）+ `ScriptedVLMPlanner`（离线脚本）+ `CallablePlanner`。 |
 | `mcp/` | `MCPToolClient` 协议、`MCPServerConnection`（单 server）、`MCPServiceManager`（后台事件循环上的 namespace 路由）、`FakeMCPToolClient`（进程内）。 |
 | `executor/` | `ExecutorClient` 协议 + `HTTPExecutorClient`。 |
-| `io/dataloader.py` | `DataLoader` 协议 + `HTTPDataLoader`（相机/bridge）+ `MockDataLoader`（合成图）+ `StaticDataLoader`（CLI `--image`）。 |
+| `io/dataloader.py` | `DataLoader` 协议 + `HTTPDataLoader`（相机/runtime HTTP 端点）+ `MockDataLoader`（合成图）+ `StaticDataLoader`（CLI `--image`）。 |
 | `app.py` | 基于 config 的应用装配层，CLI 和真机部署脚本共用。 |
 | `runtime.py` | `OnlineAgentRuntime`：组件常驻，等待多条长程任务，每条任务独立 session，完成后回到等待状态。 |
 | `interaction.py` | `InteractionLayer` 协议 + `ConsoleInteractionLayer` / `TuiInteractionLayer`。 |
@@ -62,6 +62,13 @@ robot-runtime --port 8767
 列表中按 `subtask_index` **选择**当前子任务，并可在子任务失败或计划需要变化时
 **修订**列表（重发完整的 `subtasks`）。只给 index 即可——`current_subtask` 默认取
 `subtasks[subtask_index]`。
+
+已完成子任务默认保留在计划里，并通过平行的 `subtask_statuses`
+（`pending` / `running` / `success` / `failed`）回喂给规划器。正常推进时只把
+`subtask_index` 移到下一个 `pending` 项，不删除已完成前缀；只有场景或任务需求真的变化时，
+才返回新的 `subtasks` 做 replan。loop 会拒绝两类高风险修改：`active_execution` 仍在
+`running` 时改写 plan，以及在 revised plan 里删除已经 `success` 的子任务。所有已有
+子任务都 `success` 时，规划器应返回 `task_complete=true`，而不是追加新子任务。
 
 规划器返回单个 JSON 对象。本地模型与 API 模型共用一条代码路径。后续可在同一
 `VLMPlanner` 协议下接入原生 function-calling，无需改动 loop。
@@ -173,7 +180,7 @@ DataLoader 负责视觉观测。
 
 | Provider | 配置项 | 用途 |
 |----------|--------|------|
-| `http` | `dataloader.url` | 轮询相机或机器人 bridge HTTP 端点。 |
+| `http` | `dataloader.url` | 轮询相机/runtime HTTP 端点，例如 Dual-Franka runtime `/observations/latest` 或 x2robot `/cameras/concatenated`。 |
 | `mock` | — | 离线生成合成 JPEG 帧。 |
 | `static` | — | 包装 CLI `--image` 文件。 |
 | `none` | — | 不自动注入图像。 |

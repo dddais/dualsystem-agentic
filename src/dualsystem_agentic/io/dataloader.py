@@ -6,7 +6,7 @@ layer but kept transport-agnostic.
 
 Implementations:
     StaticDataLoader   — wraps CLI ``--image`` files (backward compatible)
-    HTTPDataLoader     — polls an HTTP endpoint (e.g. x2robot bridge ``/cameras/latest``)
+    HTTPDataLoader     — polls a camera/runtime HTTP endpoint
     MockDataLoader     — generates synthetic images for offline testing
 """
 
@@ -67,7 +67,7 @@ class StaticDataLoader:
 
 
 # ---------------------------------------------------------------------------
-# HTTPDataLoader — polls a bridge/camera HTTP endpoint
+# HTTPDataLoader — polls a camera/runtime HTTP endpoint
 # ---------------------------------------------------------------------------
 
 class HTTPDataLoader:
@@ -107,10 +107,10 @@ class HTTPDataLoader:
             logger.warning("HTTPDataLoader: failed to fetch %s: %s", self.url, exc)
             return None
 
-        return self._parse_response(_unwrap_bridge_response(data))
+        return self._parse_response(_unwrap_http_response(data))
 
     def _parse_response(self, data: dict[str, Any]) -> CameraFrame | None:
-        data = _unwrap_bridge_response(data)
+        data = _unwrap_http_response(data)
         images: dict[str, ImageInput] = {}
 
         # Try the configured single-key first (e.g. concatenated_image).
@@ -183,7 +183,7 @@ class MockDataLoader:
         return img
 
 
-def _unwrap_bridge_response(data: Any) -> dict[str, Any]:
+def _unwrap_http_response(data: Any) -> dict[str, Any]:
     """Accept either raw image JSON or ``{"success": true, "data": {...}}``."""
     if not isinstance(data, dict):
         return {}

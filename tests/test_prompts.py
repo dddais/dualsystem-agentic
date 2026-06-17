@@ -9,6 +9,7 @@ from dualsystem_agentic.core.types import (
     AgenticPhase,
     AgenticPlannerInput,
     ImageInput,
+    SubtaskStatus,
 )
 
 
@@ -25,6 +26,9 @@ def test_prompt_describes_async_execute_monitor_contract():
                 "wrist": ImageInput(type="base64", data="def", mime_type="image/jpeg"),
             },
             metadata={"robot_type": "dual_franka"},
+            subtasks=["pick cup", "place cup"],
+            subtask_index=1,
+            subtask_statuses=[SubtaskStatus.SUCCESS, SubtaskStatus.PENDING],
             available_tools=[
                 {
                     "namespace": "robot",
@@ -43,10 +47,15 @@ def test_prompt_describes_async_execute_monitor_contract():
     assert "Do NOT create subtasks for checking status" in prompt
     assert "call that execute tool with the current subtask" in prompt
     assert "Do NOT keep returning empty \"tool_calls\"" in prompt
-    assert "Pick up the pink cup and place it in the dish rack." in prompt
+    assert "Pick up the visible mug and place it on the drying rack." in prompt
+    assert "Do NOT copy object names, colors, or targets from these examples" in prompt
+    assert "pink cup" not in prompt
     assert "Analyze the image to identify all items." in prompt
     assert "If Active execution is running" in prompt
     assert "monitor_success" in prompt
+    assert "Do NOT remove completed" in prompt
+    assert "0. [success] pick cup" in prompt
+    assert "1. [pending] place cup <- current" in prompt
     assert "monitor_timeout" in prompt
     assert '"decision": "plan|execute|observe|wait|replan|cancel|complete|noop"' in prompt
     assert '"should_execute": false' in prompt

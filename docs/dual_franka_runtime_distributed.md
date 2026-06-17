@@ -140,7 +140,7 @@ per-tool 分支。
 | `execute` | `POST /executions` 后自动 `POST /monitors/status` | `RobotRuntime.create_execution()` |
 | `monitor` | `POST /monitors/status` | `RobotRuntime.monitor_status()` |
 | `stop_task` | `POST /control/stop` | `RobotRuntime.stop()` |
-| `reset_task` | `POST /control/reset` | `RobotRuntime.reset()` |
+| `reset_task` | 默认隐藏；`DUAL_FRANKA_ENABLE_RESET=true` 后 `POST /control/reset` | `RobotRuntime.reset()` |
 | `emergency_stop` | `POST /control/emergency_stop` | `RobotRuntime.emergency_stop()` |
 | `fetch_env` | 默认隐藏；开启后请求 `/environment` | `RobotRuntime.environment()` |
 
@@ -436,6 +436,7 @@ mcp:
         DUAL_FRANKA_EXECUTE_PATH: /executions
         DUAL_FRANKA_STOP_PATH: /control/stop
         DUAL_FRANKA_RESET_PATH: /control/reset
+        # DUAL_FRANKA_ENABLE_RESET: "true"
         DUAL_FRANKA_ESTOP_PATH: /control/emergency_stop
 
 dataloader:
@@ -596,7 +597,7 @@ parse_error=POST http://ROBOT_MACHINE_IP:8767/monitors/status returned HTTP 404:
 
 ```json
 {
-  "subtask": "Pick up the pink cup and place it in the dish rack.",
+  "subtask": "Pick up the current object and place it at the target location.",
   "subtask_index": 0,
   "execution_id": "exec-...",
   "monitor_id": "mon-..."
@@ -609,7 +610,9 @@ parse_error=POST http://ROBOT_MACHINE_IP:8767/monitors/status returned HTTP 404:
 - 有 `active_execution` 时，自动把 `execution_id` 和 `monitor_id` 补到 monitor tool call。
 
 MCP adapter 也会缓存最近一次 `execute` 返回的 `execution_id` / `monitor_id`，作为
-空参数 `monitor` 调用的兜底。更新后请同时重启 agent 进程和 MCP server 进程。
+空参数 `monitor` 调用的兜底；它不会用上一次执行的 `subtask` / `subtask_index`
+填充当前请求，避免长驻 MCP 进程把旧任务文本带进新任务。更新后请同时重启 agent
+进程和 MCP server 进程。
 
 如果 robot runtime 在任务中途重启，内存里的 execution/monitor store 会丢失，此时
 旧的 `execution_id` / `monitor_id` 也会失效。推荐处理方式是：
@@ -621,7 +624,25 @@ curl -X POST http://ROBOT_MACHINE_IP:8767/control/reset
 
 然后重新启动当前 long-horizon task。
 
-### 5.6 为什么会出现 `stop_task` / `reset_task`
+### 5.6 子任务完成后是否会从列表里删除
+
+默认不删除。
+
+agent loop 会为 `subtasks` 维护一份平行的 `subtask_statuses`，常见状态为
+`pending` / `running` / `success` / `failed`。当 monitor 返回 `success` 时，对应
+subtask 会被标成 `success`。下一次 VLM reasoning 前，如果当前 subtask 已经是
+`success` 且后面还有 `pending` 项，loop 会先把本地 `subtask_index/current_subtask`
+推进到下一个 `pending` subtask，再构造 planner input。
+
+因此，正常推进进度时，VLM 应该保留已完成项，只处理当前 `pending` subtask。只有当
+环境变化、某个步骤已经不需要、或需要加入恢复步骤时，VLM 才应该返回新的 `subtasks`
+列表进行 replan。replan 时 loop 会尽量把文本相同的旧 subtask 状态迁移到新列表里，
+新出现的 subtask 默认是 `pending`。为了防止错误 replan 把历史/示例物体带入当前任务，
+loop 现在会拒绝两类高风险修改：`active_execution` 仍在 `running` 时改写
+`subtasks`；以及从 revised plan 中删除已经 `success` 的 subtask。所有已有 subtask
+都 `success` 时，VLM 应返回 `task_complete=true`，而不是追加新 subtask。
+
+### 5.7 为什么会出现 `stop_task` / `reset_task`
 
 `stop_task`、`reset_task` 不是 runtime 自动发出的；它们是 VLM planner 在看到
 `monitor_failed`、`monitor_timeout`、连续执行失败或状态不一致后，从可用工具里选择的
@@ -630,6 +651,10 @@ curl -X POST http://ROBOT_MACHINE_IP:8767/control/reset
 - monitor service 返回 `failed`。
 - monitor 查询报错，被 agent 转成 `monitor_failed` 事件。
 - planner 认为当前动作卡住，需要 stop/reset 后重试。
+
+默认配置不会把 `reset_task` 暴露给 VLM；只有设置
+`DUAL_FRANKA_ENABLE_RESET=true` 后，MCP adapter 才会在 `list_tools()` 中公开它并允许
+dispatch 到 `/control/reset`。在 robot-side reset 真正实现并验证前，建议保持默认隐藏。
 
 新版 agent loop 在 `stop_task`、`reset_task`、`emergency_stop` 成功返回后，会同步把本地
 `active_execution` 标记为 `failed` 并停止自动 monitor poll，避免 stop 之后继续用旧

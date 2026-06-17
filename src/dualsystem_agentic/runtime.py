@@ -11,6 +11,7 @@ from dualsystem_agentic.core.types import (
     AgenticStepResult,
     JsonDict,
     MonitorStatus,
+    SubtaskStatus,
 )
 from dualsystem_agentic.interaction import InteractionLayer, OnlineTaskSummary
 from dualsystem_agentic.run_logger import NullRunLogger, RunLogger
@@ -103,6 +104,7 @@ class OnlineAgentRuntime:
                         result.events.append(timeout_event)
                         result.monitor_status = state.monitor_status
                         result.monitor_error = state.monitor_error
+                        result.subtask_statuses = list(state.subtask_statuses)
                         result.reason_requested = True
                         result.active_execution = state.active_execution
                     results.append(result)
@@ -268,6 +270,12 @@ def _monitor_timeout_event(state: AgenticSessionState, poll_count: int) -> Agent
         active_execution.updated_at = now
         data["execution_id"] = active_execution.execution_id
         data["monitor_id"] = active_execution.monitor_id
+        _mark_subtask_status(
+            state,
+            active_execution.subtask,
+            active_execution.subtask_index,
+            SubtaskStatus.FAILED,
+        )
     state.monitor_status = MonitorStatus.FAILED
     state.monitor_error = "monitor poll limit exceeded"
     return AgenticEvent(
@@ -288,6 +296,34 @@ def _has_terminal_reason_event(events: list[AgenticEvent]) -> bool:
         "tool_failed",
     }
     return any(event.event_type in terminal_events for event in events)
+
+
+def _mark_subtask_status(
+    state: AgenticSessionState,
+    subtask: str | None,
+    subtask_index: int | None,
+    status: SubtaskStatus,
+) -> None:
+    if not state.subtasks:
+        return
+    while len(state.subtask_statuses) < len(state.subtasks):
+        state.subtask_statuses.append(SubtaskStatus.PENDING)
+    if len(state.subtask_statuses) > len(state.subtasks):
+        del state.subtask_statuses[len(state.subtasks) :]
+    index = subtask_index
+    if index is None or index < 0 or index >= len(state.subtasks):
+        if subtask is None:
+            return
+        matches = [candidate for candidate, value in enumerate(state.subtasks) if value == subtask]
+        if len(matches) != 1:
+            return
+        index = matches[0]
+    elif subtask is not None and state.subtasks[index] != subtask:
+        matches = [candidate for candidate, value in enumerate(state.subtasks) if value == subtask]
+        if len(matches) != 1:
+            return
+        index = matches[0]
+    state.subtask_statuses[index] = status
 
 
 def _summary_from(

@@ -5,6 +5,16 @@
 #   PYTHONPATH=src python examples/run_online_robot.py --config examples/config.dual_franka.runtime.yaml
 
 
+# vlm:
+#   provider: openai_compatible
+#   model: gemini-2.5-pro
+#   base_url: https://api.vectorengine.ai/v1
+#   api_key: sk-beOMdW9cnMdLsxG47X4kocPkB6BssOSQiwPIzqfaLEjgukD4
+#   timeout: 60.0
+#   sampling_params:
+#     temperature: 0.7
+#     max_tokens: 512
+
 vlm:
   provider: local_qwen
   model_path: /home/ubuntu/dais/models/RoboBrain2.5-4B
@@ -42,6 +52,8 @@ mcp:
         DUAL_FRANKA_EXECUTE_PATH: /executions
         DUAL_FRANKA_STOP_PATH: /control/stop
         DUAL_FRANKA_RESET_PATH: /control/reset
+        # Keep reset_task hidden until robot-side reset behavior is implemented and safe.
+        # DUAL_FRANKA_ENABLE_RESET: "true"
         DUAL_FRANKA_ESTOP_PATH: /control/emergency_stop
         DUAL_FRANKA_TIMEOUT_S: 30.0
         DUAL_FRANKA_UNKNOWN_STATUS: running

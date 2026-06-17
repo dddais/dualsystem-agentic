@@ -62,6 +62,26 @@ def test_dual_franka_execute_payload_allows_runtime_specific_overrides():
     assert payload["prompt"] == "custom prompt"
 
 
+def test_dual_franka_execute_identity_arguments_override_payload_passthrough():
+    server = _load_dual_franka_server_module()
+
+    payload = server._build_execute_payload(
+        {
+            "subtask": "pick bowl",
+            "subtask_index": 0,
+            "payload": {
+                "subtask": "pick spoon",
+                "subtask_index": 1,
+                "prompt": "runtime specific prompt",
+            },
+        }
+    )
+
+    assert payload["subtask"] == "pick bowl"
+    assert payload["subtask_index"] == 0
+    assert payload["prompt"] == "runtime specific prompt"
+
+
 def test_dual_franka_execute_auto_triggers_monitor():
     server = _load_dual_franka_server_module()
     server._LAST_EXECUTION.clear()
@@ -153,6 +173,8 @@ def test_dual_franka_monitor_uses_last_execution_ids_as_fallback():
     assert client.requests[-1]["path"] == "/monitors/status"
     assert client.requests[-1]["json"]["execution_id"] == "exec-1"
     assert client.requests[-1]["json"]["monitor_id"] == "mon-1"
+    assert "subtask" not in client.requests[-1]["json"]
+    assert "subtask_index" not in client.requests[-1]["json"]
     assert result["execution_id"] == "exec-1"
     assert result["monitor_id"] == "mon-1"
 
@@ -221,6 +243,34 @@ def test_dual_franka_runtime_adapter_does_not_expose_raw_http_tool():
     tools = asyncio.run(server.list_tools())
 
     assert "call_bridge" not in {tool.name for tool in tools}
+
+
+def test_dual_franka_reset_task_is_feature_flagged():
+    server = _load_dual_franka_server_module()
+    original = server.ENABLE_RESET
+    try:
+        server.ENABLE_RESET = False
+        tools = asyncio.run(server.list_tools())
+        assert "reset_task" not in {tool.name for tool in tools}
+
+        server.ENABLE_RESET = True
+        tools = asyncio.run(server.list_tools())
+        assert "reset_task" in {tool.name for tool in tools}
+    finally:
+        server.ENABLE_RESET = original
+
+
+def test_dual_franka_reset_task_dispatch_requires_feature_flag():
+    server = _load_dual_franka_server_module()
+    original = server.ENABLE_RESET
+    client = _RecordingHTTPClient([])
+    try:
+        server.ENABLE_RESET = False
+        with pytest.raises(ValueError, match="unknown tool"):
+            asyncio.run(server._dispatch(client, "reset_task", {}))
+        assert client.requests == []
+    finally:
+        server.ENABLE_RESET = original
 
 
 def test_dual_franka_fetch_env_defaults_to_empty_structured_environment():

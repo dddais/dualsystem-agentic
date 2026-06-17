@@ -12,6 +12,7 @@ from dualsystem_agentic.core.types import (
     AgenticStepResult,
     ExecutorOutput,
     ImageInput,
+    SubtaskStatus,
     ToolResult,
 )
 from dualsystem_agentic.run_logger import JsonlRunLogger, NullRunLogger
@@ -22,7 +23,9 @@ def _step_result(image_payload: str) -> AgenticStepResult:
         task="tidy the desk",
         step_index=0,
         current_subtask=None,
-        subtasks=[],
+        subtasks=["clear cups"],
+        subtask_index=0,
+        subtask_statuses=[SubtaskStatus.PENDING],
         available_tools=[
             {
                 "namespace": "demo",
@@ -52,6 +55,8 @@ def _step_result(image_payload: str) -> AgenticStepResult:
         tool_results=[ToolResult.success("monitor", {"status": "running"}, namespace="demo")],
         executor_output=ExecutorOutput.success({"accepted": True}),
         current_subtask="clear cups",
+        subtask_index=0,
+        subtask_statuses=[SubtaskStatus.RUNNING],
     )
 
 
@@ -82,6 +87,7 @@ def test_jsonl_logger_records_step_without_embedding_base64_images(tmp_path):
     assert step_event["planner_output"]["current_subtask"] == "clear cups"
     assert step_event["tool_results"][0]["tool_name"] == "monitor"
     assert step_event["executor_output"]["data"] == {"accepted": True}
+    assert step_event["subtask_statuses"] == ["running"]
     assert step_event["task_complete"] is False
 
     image_ref = step_event["planner_input"]["images"]["main"]
@@ -96,7 +102,8 @@ def test_jsonl_logger_records_step_without_embedding_base64_images(tmp_path):
     assert "SESSION STARTED" in human_log
     assert "STEP session=session_0001 step=0 phase=response vlm=called parse=ok complete=False" in human_log
     assert "task: tidy the desk" in human_log
-    assert "current: clear cups" in human_log
+    assert "current: [0] clear cups" in human_log
+    assert "0. [running] clear cups <- current" in human_log
     assert "planner_prompt:" in human_log
     assert "tool_results:" in human_log
     assert "- demo___monitor: ok" in human_log
