@@ -45,9 +45,9 @@ def test_prompt_describes_async_execute_monitor_contract():
     assert "Executable subtask constraints:" in prompt
     assert "concrete physical robot action" in prompt
     assert "Do NOT create subtasks for checking status" in prompt
-    assert "call that execute tool with the current subtask" in prompt
-    assert "Do NOT keep returning empty \"tool_calls\"" in prompt
-    assert "Pick up the visible mug and place it on the drying rack." in prompt
+    assert 'set "decision": "execute"' in prompt
+    assert "controller will" in prompt
+    assert "Pick up the red bottle and place it on the black desk." in prompt
     assert "Do NOT copy object names, colors, or targets from these examples" in prompt
     assert "pink cup" not in prompt
     assert "Analyze the image to identify all items." in prompt
@@ -58,7 +58,8 @@ def test_prompt_describes_async_execute_monitor_contract():
     assert "1. [pending] place cup <- current" in prompt
     assert "monitor_timeout" in prompt
     assert '"decision": "plan|execute|observe|wait|replan|cancel|complete|noop"' in prompt
-    assert '"should_execute": false' in prompt
+    assert '"should_execute": false' not in prompt
+    assert 'Omit "should_execute"' in prompt
     assert "scene_graph" in prompt
     assert "Visual observations:" in prompt
     assert "front, wrist" in prompt

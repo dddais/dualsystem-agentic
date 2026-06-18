@@ -3,23 +3,21 @@
 An agentic robot Dual-System framework for **long-horizon** tasks.
 
 A high-level **VLM planner** reads a long-horizon instruction, decides which
-**MCP tools** to call (`fetch_env`, `monitor`, `execute`, ...), breaks the task
-into subtasks, and emits the next subtask. A **monitor** tool reports the subtask
-status (`running` / `success` / `failed`); that feedback drives the planner's next
-decision. A downstream **VLA executor** runs the current subtask.
+**MCP tools** to call (`fetch_env`, `monitor`, ...), breaks the task into
+subtasks, and selects the next subtask. When the planner returns
+`decision="execute"`, the loop calls the configured MCP `execute` tool. A
+**monitor** tool reports the subtask status (`running` / `success` / `failed`);
+that feedback drives the planner's next decision.
 
 ```
 long-horizon instruction
         │
         ▼
-   VLM planner ──(tool_calls)──► MCP servers (fetch_env / monitor / execute, per namespace)
+   VLM planner ──(tool_calls / decision=execute)──► MCP servers (fetch_env / monitor / execute)
         ▲  │                              │
         │  │◄──── monitor status ─────────┘
         │  │  (running / success / failed)
-        │  ▼
-        │  current subtask ──► VLA executor (downstream robot)
-        │        │
-        │        ▼
+        │
         │   replan next step (loop)
         │
    DataLoader ──capture()──► CameraFrame (images injected into VLM context)
@@ -52,10 +50,10 @@ robot-runtime --port 8767
 | `core/types.py` | Data structures: `ToolCall`/`ToolResult` (with `namespace`), `MonitorStatus`, `AgenticPlannerInput`/`Output`, `AgenticSessionState`, `ExecutorInput`/`Output`, `AgenticStepResult`. |
 | `core/prompts.py` | `build_agentic_prompt`: renders planner context (tools by namespace, monitor status, environment, last tool results) into a prompt. |
 | `core/parser.py` | `parse_agentic_planner_output`: robust JSON-in-text parsing of the planner reply. |
-| `core/loop.py` | `AgenticRobotLoop`: planner → tools → monitor feedback → executor handoff. |
+| `core/loop.py` | `AgenticRobotLoop`: planner → MCP tools/execute → monitor feedback. |
 | `vlm/` | `VLMPlanner` protocol + `OpenAICompatibleVLMPlanner` (API) + `LocalQwenVLMPlanner` (local) + `CallablePlanner`. |
 | `mcp/` | `MCPToolClient` protocol, `MCPServerConnection` (one server), `MCPServiceManager` (namespace routing over a background loop), `FakeMCPToolClient` (in-process). |
-| `executor/` | `ExecutorClient` protocol + `HTTPExecutorClient`. |
+| `executor/` | Legacy/noop executor adapters kept for API compatibility. |
 | `io/dataloader.py` | `DataLoader` protocol + `HTTPDataLoader` (camera/runtime HTTP endpoint) + `MockDataLoader` (synthetic) + `StaticDataLoader` (CLI `--image`). |
 | `app.py` | Config-driven app builders shared by CLI and robot deployment scripts. |
 | `runtime.py` | `OnlineAgentRuntime`: keeps components alive, waits for user tasks, resets session state per task, and returns to waiting after completion/failure. |
@@ -75,10 +73,12 @@ Completed subtasks stay in the plan and are shown back to the planner through th
 parallel `subtask_statuses` list (`pending` / `running` / `success` / `failed`).
 Normal progress means advancing `subtask_index` to the next `pending` item, not
 deleting completed prefixes. The loop still accepts a real replan when the scene
-or task requirements change, but rejects plan edits while an `active_execution` is
-still `running` and rejects revised plans that drop already `success` items. When
-all existing subtasks are `success`, the planner should set `task_complete=true`
-instead of inventing new work.
+or task requirements change, but rejects moving the current selection away from
+the active subtask while an execution is `running`, and rejects revised plans that
+drop already `success` items. While an active execution is running, the planner
+may update future plan items to adapt to scene changes, but `subtask_index` must
+still point at the active subtask. When all existing subtasks are `success`, the
+planner should set `task_complete=true` instead of inventing new work.
 
 The planner returns a single JSON object. One code path works for both local and
 API models. Native function-calling can be added later behind the same `VLMPlanner`
@@ -86,13 +86,12 @@ protocol without touching the loop.
 
 ```json
 {
+  "decision": "execute",
   "tool_calls": [
-    {"name": "demo_robot___fetch_env", "arguments": {}},
-    {"name": "demo_robot___monitor", "arguments": {"subtask": "turn on the radio", "subtask_index": 0}}
+    {"name": "demo_robot___fetch_env", "arguments": {}}
   ],
   "subtasks": ["turn on the radio", "tidy the table"],
   "subtask_index": 0,
-  "current_subtask": "turn on the radio",
   "task_complete": false
 }
 ```
@@ -111,9 +110,9 @@ planner without config changes.
 
 A status-reporting tool (the `monitor` role) is expected to return
 `{"status": "running|success|failed", ...}`. The status is written to the session
-state and fed back to the planner next step. If the planner calls the MCP `execute`
-tool, the downstream `ExecutorClient` is skipped for that step (the robot executes
-via its own MCP server instead).
+state and fed back to the planner next step. To start the selected subtask, the
+planner returns `"decision": "execute"`; the loop calls the configured MCP
+`execute` tool and fills `subtask` / `subtask_index`.
 
 By convention, the standard role tool names are `fetch_env`, `monitor`, and
 `execute`; example configs do not repeat them. If a robot exposes different tool
@@ -143,8 +142,8 @@ structured outputs from any tool:
 |-------------|-------------|
 | `{"status": "running|success|failed"}` | update monitor feedback |
 | `{"scene_graph": {...}}`, `{"environment": {...}}`, or `{"env": {...}}` | merge scene state into planner context |
-| `{"executed": true}` | treat action as already executed by MCP and skip downstream executor |
-| `{"agentic_role": "monitor|fetch_env|execute"}` | explicit role hint for unusual outputs |
+| configured `execute` tool result | create/update active execution |
+| `{"agentic_role": "monitor|fetch_env|execute"}` | explicit role hint for unusual tool results |
 
 ## MCP namespaces (different robots = different servers)
 
@@ -317,16 +316,14 @@ logging:
 ## Programmatic use
 
 ```python
-from dualsystem_agentic import AgenticRobotLoop, CallablePlanner, ExecutorOutput, FakeMCPToolClient
+from dualsystem_agentic import AgenticRobotLoop, CallablePlanner, FakeMCPToolClient
+from dualsystem_agentic.executor.base import NoopExecutorClient
 
 tools = FakeMCPToolClient()
+tools.register("execute", lambda args: {"executed": True}, namespace="demo_robot")
 tools.register("monitor", lambda args: {"status": "running"}, namespace="demo_robot")
 
-class Executor:
-    def execute(self, executor_input):
-        return ExecutorOutput.success({"ack": executor_input.subtask})
-
-loop = AgenticRobotLoop(my_vlm_planner, tools, Executor())
+loop = AgenticRobotLoop(my_vlm_planner, tools, NoopExecutorClient())
 results, state = loop.run("turn on the radio", max_steps=10)
 
 # For repeated online tasks, wrap the same loop in OnlineAgentRuntime.
@@ -336,7 +333,7 @@ results, state = loop.run("turn on the radio", max_steps=10)
 
 The code is intentionally split by runtime boundary rather than by robot type:
 `core/` owns the agent loop and JSON-safe state, `vlm/` owns planner adapters,
-`mcp/` owns tool routing, `executor/` owns downstream execution, `io/` owns
+`mcp/` owns tool routing and robot execution, `executor/` is legacy compatibility, `io/` owns
 observations, `app.py` owns config-driven wiring, and `runtime.py` /
 `interaction.py` / `run_logger.py` own online operation. The main simplification
 is to keep robot-specific behavior in config and MCP servers instead of adding

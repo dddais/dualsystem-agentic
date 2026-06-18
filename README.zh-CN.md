@@ -3,22 +3,19 @@
 面向**长程任务**的 agentic 机器人 Dual-System 框架。
 
 高层 **VLM 规划器**读取长程任务指令，决定调用哪些 **MCP 工具**（`fetch_env`、
-`monitor`、`execute` 等），将任务拆分为子任务，并输出下一个子任务。`monitor`
+`monitor` 等），将任务拆分为子任务，并选择下一个子任务。规划器返回
+`decision="execute"` 时，loop 会调用配置的 MCP `execute` 工具。`monitor`
 工具上报当前子任务的状态（`running` / `success` / `failed`），这一反馈驱动规划器
-的下一步决策。下游 **VLA 执行器**负责执行当前子任务。
+的下一步决策。
 
 ```
 长程任务指令
         │
         ▼
-   VLM 规划器 ──(tool_calls)──► MCP servers（fetch_env / monitor / execute，按 namespace 区分）
+   VLM 规划器 ──(tool_calls / decision=execute)──► MCP servers（fetch_env / monitor / execute）
       │                              │
         │◄──── monitor 状态 ───────────┘
         │  (running / success / failed)
-        ▼
-  当前子任务 ──► VLA 执行器（下游真机）
-        │
-        ▼
    规划下一步（循环）
 ```
 
@@ -45,10 +42,10 @@ robot-runtime --port 8767
 | `core/types.py` | 数据结构：`ToolCall`/`ToolResult`（带 `namespace`）、`MonitorStatus`、`AgenticPlannerInput`/`Output`、`AgenticSessionState`、`ExecutorInput`/`Output`、`AgenticStepResult`。 |
 | `core/prompts.py` | `build_agentic_prompt`：把规划上下文（按 namespace 列出的工具、monitor 状态、环境、上一轮工具结果）渲染成 prompt。 |
 | `core/parser.py` | `parse_agentic_planner_output`：对规划器回复做鲁棒的 JSON-in-text 解析。 |
-| `core/loop.py` | `AgenticRobotLoop`：规划器 → 工具 → monitor 反馈 → 执行器交接。 |
+| `core/loop.py` | `AgenticRobotLoop`：规划器 → MCP 工具/execute → monitor 反馈。 |
 | `vlm/` | `VLMPlanner` 协议 + `OpenAICompatibleVLMPlanner`（API）+ `LocalQwenVLMPlanner`（本地）+ `ScriptedVLMPlanner`（离线脚本）+ `CallablePlanner`。 |
 | `mcp/` | `MCPToolClient` 协议、`MCPServerConnection`（单 server）、`MCPServiceManager`（后台事件循环上的 namespace 路由）、`FakeMCPToolClient`（进程内）。 |
-| `executor/` | `ExecutorClient` 协议 + `HTTPExecutorClient`。 |
+| `executor/` | 为 API 兼容保留的 legacy/noop executor 适配。 |
 | `io/dataloader.py` | `DataLoader` 协议 + `HTTPDataLoader`（相机/runtime HTTP 端点）+ `MockDataLoader`（合成图）+ `StaticDataLoader`（CLI `--image`）。 |
 | `app.py` | 基于 config 的应用装配层，CLI 和真机部署脚本共用。 |
 | `runtime.py` | `OnlineAgentRuntime`：组件常驻，等待多条长程任务，每条任务独立 session，完成后回到等待状态。 |
@@ -67,21 +64,22 @@ robot-runtime --port 8767
 （`pending` / `running` / `success` / `failed`）回喂给规划器。正常推进时只把
 `subtask_index` 移到下一个 `pending` 项，不删除已完成前缀；只有场景或任务需求真的变化时，
 才返回新的 `subtasks` 做 replan。loop 会拒绝两类高风险修改：`active_execution` 仍在
-`running` 时改写 plan，以及在 revised plan 里删除已经 `success` 的子任务。所有已有
-子任务都 `success` 时，规划器应返回 `task_complete=true`，而不是追加新子任务。
+`running` 时把当前选择移离 active subtask，以及在 revised plan 里删除已经
+`success` 的子任务。active execution 仍在运行时可以根据环境变化更新后续 plan，
+但 `subtask_index` 必须仍指向 active subtask。所有已有子任务都 `success` 时，
+规划器应返回 `task_complete=true`，而不是追加新子任务。
 
 规划器返回单个 JSON 对象。本地模型与 API 模型共用一条代码路径。后续可在同一
 `VLMPlanner` 协议下接入原生 function-calling，无需改动 loop。
 
 ```json
 {
+  "decision": "execute",
   "tool_calls": [
-    {"name": "demo_robot___fetch_env", "arguments": {}},
-    {"name": "demo_robot___monitor", "arguments": {"subtask": "turn on the radio", "subtask_index": 0}}
+    {"name": "demo_robot___fetch_env", "arguments": {}}
   ],
   "subtasks": ["turn on the radio", "tidy the table"],
   "subtask_index": 0,
-  "current_subtask": "turn on the radio",
   "task_complete": false
 }
 ```
@@ -97,8 +95,9 @@ prompt 里的工具清单——canonical 名称、描述、参数 schema——�
 工具后，规划器会自动看到，通常不需要改 config。
 
 承担 `monitor` 角色的状态上报工具应返回 `{"status": "running|success|failed", ...}`。
-该状态写入会话状态，并在下一步回喂给规划器。如果规划器调用了 MCP `execute` 工具，
-则当前步跳过下游 `ExecutorClient`（改由机器人自己的 MCP server 执行）。
+该状态写入会话状态，并在下一步回喂给规划器。规划器想启动当前子任务时返回
+`"decision": "execute"`；loop 会自动调用配置的 MCP `execute` 工具并填入
+`subtask` / `subtask_index`。
 
 默认约定的角色工具名是 `fetch_env`、`monitor`、`execute`，示例配置不会重复列出这些
 默认值。只有机器人 MCP server 使用了非标准名字时，才需要做角色映射：
@@ -125,8 +124,8 @@ loop:
 |----------|-----------|
 | `{"status": "running|success|failed"}` | 更新 monitor 反馈 |
 | `{"scene_graph": {...}}`、`{"environment": {...}}` 或 `{"env": {...}}` | 合并场景状态到 planner context |
-| `{"executed": true}` | 认为动作已由 MCP 执行，跳过下游 executor |
-| `{"agentic_role": "monitor|fetch_env|execute"}` | 非常规返回的显式角色提示 |
+| configured `execute` tool result | 创建/更新 active execution |
+| `{"agentic_role": "monitor|fetch_env|execute"}` | 非常规工具返回的显式角色提示 |
 
 ## MCP 命名空间（不同机器人 = 不同 server）
 
@@ -282,16 +281,14 @@ logging:
 ## 编程接口
 
 ```python
-from dualsystem_agentic import AgenticRobotLoop, CallablePlanner, FakeMCPToolClient, ExecutorOutput
+from dualsystem_agentic import AgenticRobotLoop, CallablePlanner, FakeMCPToolClient
+from dualsystem_agentic.executor.base import NoopExecutorClient
 
 tools = FakeMCPToolClient()
+tools.register("execute", lambda args: {"executed": True}, namespace="demo_robot")
 tools.register("monitor", lambda args: {"status": "running"}, namespace="demo_robot")
 
-class Executor:
-    def execute(self, executor_input):
-        return ExecutorOutput.success({"ack": executor_input.subtask})
-
-loop = AgenticRobotLoop(my_vlm_planner, tools, Executor())
+loop = AgenticRobotLoop(my_vlm_planner, tools, NoopExecutorClient())
 results, state = loop.run("turn on the radio", max_steps=10)
 
 # 多条在线任务可复用同一个 loop，交给 OnlineAgentRuntime 管理。
@@ -300,7 +297,7 @@ results, state = loop.run("turn on the radio", max_steps=10)
 ## 结构精简建议
 
 当前结构按运行边界拆分，而不是按机器人型号拆分：`core/` 管 agent loop 和状态，
-`vlm/` 管规划器适配，`mcp/` 管工具路由，`executor/` 管下游执行，`io/` 管观测，
+`vlm/` 管规划器适配，`mcp/` 管工具路由和机器人执行，`executor/` 管 legacy 兼容，`io/` 管观测，
 `app.py` 管 config 驱动装配，`runtime.py` / `interaction.py` / `run_logger.py` 管在线运行。
 后续接新机器人时，优先把差异放进配置和 MCP server，避免在 `AgenticRobotLoop` 或
 `cli.py` 中增加 per-robot 分支；demo/test 专用的脚本 VLM、fake MCP 也保持在边界适配层，

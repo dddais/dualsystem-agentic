@@ -9,11 +9,7 @@ vlm:
         - approach the target object
         - pick up the target object
       subtask_index: 0
-      should_execute: false
-    - tool_calls:
-        - name: mock___execute
-          arguments:
-            subtask: approach the target object
+    - decision: execute
       subtask_index: 0
     - tool_calls:
         - name: mock___monitor
@@ -21,18 +17,13 @@ vlm:
             subtask: approach the target object
             subtask_index: 0
       subtask_index: 0
-      should_execute: false
     - tool_calls:
         - name: mock___monitor
           arguments:
             subtask: approach the target object
             subtask_index: 0
       subtask_index: 0
-      should_execute: false
-    - tool_calls:
-        - name: mock___execute
-          arguments:
-            subtask: pick up the target object
+    - decision: execute
       subtask_index: 1
     - tool_calls:
         - name: mock___monitor
@@ -40,14 +31,12 @@ vlm:
             subtask: pick up the target object
             subtask_index: 1
       subtask_index: 1
-      should_execute: false
     - tool_calls:
         - name: mock___monitor
           arguments:
             subtask: pick up the target object
             subtask_index: 1
       subtask_index: 1
-      should_execute: false
     - task_complete: true
 
 executor:

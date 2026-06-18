@@ -57,9 +57,11 @@ class VisualScenePrepassPlanner:
         self.environment_key = environment_key
         self.sampling_params = sampling_params or {}
         self.last_visual_scene: JsonDict | None = None
+        self.last_planner_input: AgenticPlannerInput | None = None
 
     def generate(self, planner_input: AgenticPlannerInput) -> str:
         self.last_visual_scene = None
+        self.last_planner_input = planner_input
         if not planner_input.images:
             return self.planner.generate(planner_input)
 
@@ -68,6 +70,7 @@ class VisualScenePrepassPlanner:
         enriched_environment = dict(planner_input.environment)
         enriched_environment[self.environment_key] = scene
         enriched_input = replace(planner_input, environment=enriched_environment)
+        self.last_planner_input = enriched_input
         return self.planner.generate(enriched_input)
 
     def _generate_visual_scene(self, planner_input: AgenticPlannerInput) -> JsonDict:

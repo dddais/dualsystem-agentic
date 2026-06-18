@@ -192,7 +192,7 @@ def _optional_decision(value: Any | None) -> str | None:
 
 
 def _default_should_execute(decision: str | None) -> bool:
-    return decision not in _PASSIVE_DECISIONS
+    return False
 
 
 def _optional_int(value: Any) -> int | None:

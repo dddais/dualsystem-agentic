@@ -274,7 +274,7 @@ class AgenticPlannerOutput:
     current_subtask: str | None = None
     subtask_index: int | None = None
     subtasks: list[str] = field(default_factory=list)
-    should_execute: bool = True
+    should_execute: bool = False
     should_execute_explicit: bool = False
     task_complete: bool = False
     parse_ok: bool = True

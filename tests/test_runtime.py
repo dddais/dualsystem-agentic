@@ -333,10 +333,9 @@ def test_online_runtime_stops_after_max_monitor_polls():
     def planner(_planner_input):
         return json.dumps(
             {
-                "tool_calls": [
-                    {"namespace": "demo", "name": "execute", "arguments": {"subtask": "pick cup"}}
-                ],
-                "current_subtask": "pick cup",
+                "decision": "execute",
+                "subtasks": ["pick cup"],
+                "subtask_index": 0,
             }
         )
 

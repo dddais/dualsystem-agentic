@@ -30,7 +30,7 @@ from typing import Any
 from PIL import Image, ImageDraw, ImageFont, ImageOps
 
 
-DEFAULT_RUN_DIR = "runs/run_20260617_121212"
+DEFAULT_RUN_DIR = "runs/run_20260617_214209"
 DEFAULT_CAMERA_ORDER = ("cam_left_wrist", "cam_high", "cam_right_wrist")
 
 BG = (12, 18, 32)
