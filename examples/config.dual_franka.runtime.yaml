@@ -11,24 +11,70 @@
 #   base_url: https://api.vectorengine.ai/v1
 #   api_key: sk-beOMdW9cnMdLsxG47X4kocPkB6BssOSQiwPIzqfaLEjgukD4
 #   timeout: 60.0
+  # visual_scene_prepass: false
+  # visual_scene_sampling_params:
+  #   do_sample: false
+  #   max_new_tokens: 256
+  # sampling_params:
+  #   temperature: 0.7
+  #   max_tokens: 512
+
+# vlm:
+#   provider: openai_compatible
+#   model: gemini-2.5-pro
+#   base_url: https://generativelanguage.googleapis.com/v1beta/openai/
+#   api_key: AIzaSyCEWlRVz6nW4GTzEX4qVjHqJJ6g4hzE2o4
+#   timeout: 60.0
+#   visual_scene_prepass: false
+#   visual_scene_sampling_params:
+#     do_sample: false
+#     max_new_tokens: 256
 #   sampling_params:
-#     temperature: 0.7
-#     max_tokens: 512
+#     temperature: 0.2
+#     max_tokens: 4096
+
+# vlm:
+#   provider: openai_compatible
+#   model: glm-4.6v
+#   base_url: https://cloud.infini-ai.com/maas/v1/chat/completions
+#   api_key:  sk-eumobptt6osvkks6
+#   timeout: 60.0
+#   visual_scene_prepass: false
+#   visual_scene_sampling_params:
+#     do_sample: false
+#     max_new_tokens: 256
+#   sampling_params:
+#     temperature: 0.2
+#     max_tokens: 2048
 
 vlm:
-  provider: local_qwen
-  model_path: /home/ubuntu/dais/models/RoboBrain2.5-4B
-  model_family: qwen3
-  device: cuda:0
-  dtype: bf16
+  provider: openai_compatible
+  model: qwen3.5-122b-a10b
+  base_url: https://ws-chd6rib4ddk41clg.cn-beijing.maas.aliyuncs.com/compatible-mode/v1
+  api_key:  sk-ws-H.RXEPRDP.mkod.MEYCIQCQfKZEeSTFYne_g8Y1HU_fF78vZgg4r65lJYz8HmwK4wIhAM6CeKFTBkEMCZC_HEv1mPFqxWZH0o9IiA9FegrgXCS_
+  timeout: 60.0
   visual_scene_prepass: false
   visual_scene_sampling_params:
     do_sample: false
     max_new_tokens: 256
   sampling_params:
-    do_sample: false
-    temperature: 0.7
-    max_new_tokens: 512
+    temperature: 0.2
+    max_tokens: 2048
+
+# vlm:
+#   provider: local_qwen
+#   model_path: /home/ubuntu/dais/models/RoboBrain2.5-4B
+#   model_family: qwen3
+#   device: cuda:0
+#   dtype: bf16
+#   visual_scene_prepass: false
+#   visual_scene_sampling_params:
+#     do_sample: false
+#     max_new_tokens: 256
+#   sampling_params:
+#     do_sample: false
+#     temperature: 0.7
+#     max_new_tokens: 512
 
 executor:
   provider: noop
@@ -42,7 +88,7 @@ mcp:
       command: python
       args: ["mcp_server/dual_franka_mcp_server/server.py"]
       env:
-        DUAL_FRANKA_RUNTIME_URL: http://192.168.120.143:8767
+        DUAL_FRANKA_RUNTIME_URL: http://192.168.121.167:8767
         # Keep fetch_env hidden unless a real structured scene-graph provider is connected.
         # Images already arrive through HTTPDataLoader; exposing fetch_env with only runtime
         # bookkeeping can make the VLM repeatedly observe instead of executing.
@@ -60,14 +106,14 @@ mcp:
 
 loop:
   max_steps: 20
-  reason_interval_s: 10.0
+  reason_interval_s: 1000.0
   monitor_poll_interval_s: 1.0
   max_monitor_polls: 300
   include_metadata_in_prompt: false
 
 dataloader:
   provider: http
-  url: http://192.168.120.143:8767/observations/latest
+  url: http://192.168.121.167:8767/observations/latest
   timeout: 10.0
   image_key: concatenated_image
   label: main

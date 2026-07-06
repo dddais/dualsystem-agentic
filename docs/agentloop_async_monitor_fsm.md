@@ -1,6 +1,11 @@
 # AgentLoop 异步 Monitor 状态机设计文档
 
-本文档总结当前 AgentLoop 改造方案的目标效果、整体流程、状态机语义、VLM 决策协议，以及不同决策对应的下一步处理方式。
+本文档总结当前 AgentLoop 的目标效果、整体流程、状态机语义、VLM 决策协议，以及不同决策对应的下一步处理方式。
+
+> 说明：本文档保留异步 monitor 状态机的设计背景，但协议部分已按当前实现更新。
+> 当前 VLM 不应直接写 `execute` tool call，也不应使用 `should_execute` 启动动作。
+> 启动动作的唯一 planner 入口是 `decision="execute"`；loop 负责注入一次配置好的
+> MCP execute 调用。
 
 ## 1. 设计目标
 
@@ -34,7 +39,7 @@ init -> ready -> reason -> act -> response -> reason -> ...
 
 - VLM planner
 - MCP client / MCP service manager
-- downstream executor
+- configured MCP execute tool
 - dataloader
 - interaction layer
 - run logger
@@ -88,7 +93,7 @@ VLM 根据这些信息输出一个“决策包”，决定下一步是执行工�
 
 如果调用的是 `execute`：
 
-1. loop 调用 MCP `execute` 或 downstream executor。
+1. loop 调用配置的 MCP `execute`。
 2. 如果启动成功，创建 `active_execution`。
 3. 自动调用 monitor 工具作为 `start_monitor`。
 4. 不等待动作完成，直接进入 `response`。
@@ -411,31 +416,16 @@ reason_requested = true
 
 ## 5. VLM 决策协议
 
-当前兼容协议主要依赖这些字段：
+当前协议主要依赖这些字段：
 
 ```json
 {
+  "decision": "plan|execute|observe|wait|replan|cancel|complete|ask_user|noop",
   "tool_calls": [],
   "subtasks": [],
   "subtask_index": 0,
   "current_subtask": "pick up the cup",
-  "should_execute": true,
   "task_complete": false
-}
-```
-
-为了让状态机更清晰，建议后续扩展显式 `decision` 字段：
-
-```json
-{
-  "decision": "execute",
-  "tool_calls": [],
-  "subtasks": [],
-  "subtask_index": 0,
-  "current_subtask": "pick up the cup",
-  "should_execute": true,
-  "task_complete": false,
-  "message": ""
 }
 ```
 
@@ -453,7 +443,13 @@ ask_user
 noop
 ```
 
-v1 可以先兼容旧字段；后续再让 prompt 强制 VLM 输出 `decision`。
+关键不变量：
+
+- `decision="execute"` 表示启动当前 `subtask_index` 选中的动作。
+- VLM 不直接写 configured execute tool call；loop 会注入一次 execute。
+- `monitor` 只在已有 running `active_execution` 时使用。
+- `task_complete=true` 只能与 `decision="complete"` 或省略 decision 搭配。
+- parser 会识别 legacy `should_execute` 字段，但当前 loop 不使用它触发执行。
 
 ## 6. VLM 决策到下一步处理的映射
 
@@ -466,7 +462,6 @@ v1 可以先兼容旧字段；后续再让 prompt 强制 VLM 输出 `decision`�
   "decision": "plan",
   "subtasks": ["approach the cup", "pick up the cup", "place it on the shelf"],
   "subtask_index": 0,
-  "should_execute": false,
   "task_complete": false
 }
 ```
@@ -487,45 +482,29 @@ v1 可以先兼容旧字段；后续再让 prompt 强制 VLM 输出 `decision`�
 
 ### 6.2 execute
 
-典型输出有两种。
-
-通过 MCP execute：
+典型输出：
 
 ```json
 {
   "decision": "execute",
-  "tool_calls": [
-    {
-      "name": "demo_robot___execute",
-      "arguments": {
-        "subtask": "pick up the cup"
-      }
-    }
-  ],
+  "tool_calls": [],
+  "subtask_index": 0,
   "current_subtask": "pick up the cup",
   "task_complete": false
 }
 ```
 
-通过 downstream executor：
-
-```json
-{
-  "decision": "execute",
-  "current_subtask": "pick up the cup",
-  "should_execute": true,
-  "task_complete": false
-}
-```
+`tool_calls` 可以省略。即使保留，也不能包含 configured execute tool；loop 会根据
+`decision="execute"` 注入一次 execute，并填入 `subtask` / `subtask_index`。
 
 处理方式：
 
 1. 检查是否已有 `active_execution.status=running`。
 2. 如果已有 running execution，拒绝重复 execute，记录 parse/error。
-3. 如果没有 running execution，调用 MCP execute 或 downstream executor。
+3. 如果没有 running execution，loop 注入并调用 configured MCP execute。
 4. execute 成功后创建 `active_execution`。
-5. 自动调用 monitor 作为 `start_monitor`。
-6. 写入 `monitor_running` event。
+5. execute 返回初始 monitor 状态时直接使用；否则可启动 monitor 查询。
+6. 写入 monitor event。
 7. 进入 `response`。
 
 硬约束：
@@ -549,7 +528,6 @@ active_execution.status == running 时禁止重复 execute
       "arguments": {}
     }
   ],
-  "should_execute": false,
   "task_complete": false
 }
 ```
@@ -575,13 +553,9 @@ active_execution.status == running 时禁止重复 execute
   "tool_calls": [
     {
       "name": "demo_robot___monitor",
-      "arguments": {
-        "subtask": "pick up the cup",
-        "subtask_index": 1
-      }
+      "arguments": {}
     }
-  ],
-  "should_execute": false
+  ]
 }
 ```
 
@@ -610,7 +584,6 @@ active_execution.status == running 时禁止重复 execute
 {
   "decision": "wait",
   "current_subtask": "pick up the cup",
-  "should_execute": false,
   "task_complete": false
 }
 ```
@@ -650,9 +623,7 @@ execute_failed
     "retry picking up the cup",
     "place it on the shelf"
   ],
-  "subtask_index": 0,
-  "current_subtask": "move obstacle away",
-  "should_execute": true
+  "subtask_index": 0
 }
 ```
 
@@ -677,8 +648,7 @@ execute_failed
         "execution_id": "exec-123"
       }
     }
-  ],
-  "should_execute": false
+  ]
 }
 ```
 
@@ -726,7 +696,6 @@ running execution 存在时，不接受 task_complete=true
 {
   "decision": "ask_user",
   "message": "Which shelf should I place the cup on?",
-  "should_execute": false,
   "task_complete": false
 }
 ```
@@ -748,7 +717,6 @@ running execution 存在时，不接受 task_complete=true
 {
   "decision": "noop",
   "message": "This instruction is unrelated to robot control.",
-  "should_execute": false,
   "task_complete": false
 }
 ```
@@ -867,33 +835,21 @@ loop:
 - `AgenticEvent`: monitor/tool/runtime 事件。
 - `RunLogger`: 记录 phase、events、active execution、planner input/output。
 
-当前 v1 仍兼容旧协议：
+当前实现的协议状态：
 
-- 没有强制 VLM 输出 `decision`。
-- 仍支持 `tool_calls`、`current_subtask`、`should_execute`、`task_complete`。
-- `monitor` 工具名仍可复用为 `start_monitor`/`get_monitor_status`。
+- prompt 要求 VLM 输出 `decision`，其中 `decision="execute"` 是启动动作的唯一 planner 入口。
+- parser 仍接受 `tool_calls`、`current_subtask`、`task_complete`，并识别 legacy `should_execute`，但 loop 不使用 `should_execute` 触发执行。
+- VLM 不直接调用 configured execute tool；loop 根据 `decision="execute"` 注入一次 execute。
+- `monitor` 工具名仍兼容主动 status query；运行时也会通过 `poll_monitor` 轮询 active execution。
 - 旧式同步 monitor 通过 runtime poll 兼容。
 
 ## 10. 推荐后续演进
 
-### 10.1 引入显式 decision 字段
+### 10.1 收敛 legacy 输出字段
 
-建议下一步让 prompt 要求 VLM 输出：
-
-```json
-{
-  "decision": "execute",
-  "tool_calls": [],
-  "subtasks": [],
-  "subtask_index": 0,
-  "current_subtask": "...",
-  "should_execute": false,
-  "task_complete": false,
-  "message": ""
-}
-```
-
-这样 loop 不再需要靠字段组合推断 VLM 意图。
+当前仍保留 `current_subtask` 和 legacy `should_execute` 的解析兼容。后续如果没有旧调用方
+依赖，可以从公共类型和日志中移除 `should_execute` 字段，只保留 `decision` /
+`subtask_index` / `task_complete`。
 
 ### 10.2 区分 start_monitor 和 get_monitor_status
 

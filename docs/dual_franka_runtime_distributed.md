@@ -61,12 +61,14 @@ Agent 仓库不需要 import `robot_runtime`；它只需要通过
 
 ```text
 VLM planner
-  -> tool call: dual_franka___execute(subtask)
+  -> JSON: decision="execute", subtask_index=<selected plan item>
+
+Agent loop:
+  -> injects one dual_franka___execute(subtask, subtask_index)
   -> MCP stdio adapter
   -> POST http://robot-runtime:8767/executions
   <- execution_id, monitor_id, status
 
-Agent loop:
   active_execution = {
     execution_id,
     monitor_id,
@@ -137,7 +139,7 @@ per-tool 分支。
 
 | MCP tool | HTTP request | Runtime path |
 |----------|--------------|--------------|
-| `execute` | `POST /executions` 后自动 `POST /monitors/status` | `RobotRuntime.create_execution()` |
+| `execute` | `POST /executions` 后查询一次 `/monitors/status` 作为初始状态 | `RobotRuntime.create_execution()` |
 | `monitor` | `POST /monitors/status` | `RobotRuntime.monitor_status()` |
 | `stop_task` | `POST /control/stop` | `RobotRuntime.stop()` |
 | `reset_task` | 默认隐藏；`DUAL_FRANKA_ENABLE_RESET=true` 后 `POST /control/reset` | `RobotRuntime.reset()` |

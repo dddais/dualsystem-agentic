@@ -6,7 +6,7 @@ All robot operations are forwarded to the runtime HTTP API:
 
 - ``fetch_env``  -> robot/environment state over HTTP
 - ``monitor``    -> subtask status over HTTP
-- ``execute``    -> subtask execution, followed by an automatic monitor call
+- ``execute``    -> subtask execution plus initial monitor status/ids
 - controls    -> stop/reset/emergency runtime calls over HTTP
 
 The VLM sees these tools through the project registry as
@@ -111,8 +111,7 @@ async def list_tools() -> list[types.Tool]:
         types.Tool(
             name="execute",
             description=(
-                "Execute one subtask on the dual-Franka runtime, then "
-                "automatically trigger monitor for the same subtask."
+                "Start one dual-Franka subtask and return initial monitor status/ids."
             ),
             inputSchema={
                 "type": "object",

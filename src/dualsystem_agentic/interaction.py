@@ -362,7 +362,10 @@ def _format_plan_update(
     result: AgenticStepResult,
     displayed_subtasks: _PlanDisplayKey,
 ) -> tuple[str, _PlanDisplayKey] | None:
-    source_subtasks = result.planner_output.subtasks or result.planner_input.subtasks
+    if result.parse_ok:
+        source_subtasks = result.planner_output.subtasks or result.planner_input.subtasks
+    else:
+        source_subtasks = result.planner_input.subtasks
     subtasks = tuple(source_subtasks)
     if not subtasks:
         return None

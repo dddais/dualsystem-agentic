@@ -8,7 +8,7 @@ camera:
 
 monitor:
   provider: remote_http
-  url: http://192.168.120.140:8877
+  url: http://192.168.121.168:8877
   timeout: 30.0
 
 safety:

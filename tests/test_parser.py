@@ -40,3 +40,18 @@ def test_parser_treats_complete_decision_as_task_complete():
     assert output.decision == "complete"
     assert output.task_complete is True
     assert output.should_execute is False
+
+
+def test_parser_ignores_legacy_should_execute_value():
+    output = parse_agentic_planner_output(
+        json.dumps(
+            {
+                "current_subtask": "pick up the cup",
+                "should_execute": True,
+            }
+        )
+    )
+
+    assert output.parse_ok is True
+    assert output.should_execute is False
+    assert output.should_execute_explicit is True

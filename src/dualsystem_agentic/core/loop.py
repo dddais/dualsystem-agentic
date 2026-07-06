@@ -74,6 +74,20 @@ class _ExecutionStep:
     executor_output: ExecutorOutput | None = None
 
 
+@dataclass(frozen=True)
+class _ControlUpdate:
+    monitor_status: MonitorStatus | None
+    monitor_error: str | None
+    affected_subtask: str | None = None
+    affected_subtask_index: int | None = None
+
+
+@dataclass(frozen=True)
+class _AvailableToolNames:
+    canonical: set[str]
+    short_counts: dict[str, int]
+
+
 class AgenticRobotLoop:
     """Coordinate planner, MCP tools, monitor feedback, and executor handoff."""
 
@@ -214,33 +228,21 @@ class AgenticRobotLoop:
             else:
                 effective_index = plan_selection.subtask_index
                 current_subtask = plan_selection.current_subtask
-                blocked = _planner_structure_block(
+                blocked = _prepare_planner_tool_calls(
                     state=state,
                     planner_output=planner_output,
+                    available_tools=planner_input.available_tools,
                     current_subtask=current_subtask,
+                    subtask_index=effective_index,
                     execute_tool_name=self.execute_tool_name,
+                    monitor_tool_name=self.monitor_tool_name,
                 )
-                if blocked is None:
-                    blocked = _ensure_execute_tool_call_if_requested(
-                        planner_output=planner_output,
-                        available_tools=planner_input.available_tools,
-                        current_subtask=current_subtask,
-                        subtask_index=effective_index,
-                        execute_tool_name=self.execute_tool_name,
-                    )
-                if blocked is None:
-                    planner_output.tool_calls = _normalize_subtask_identity_tool_calls(
-                        planner_output.tool_calls,
-                        current_subtask=current_subtask,
-                        subtask_index=effective_index,
-                        execute_tool_name=self.execute_tool_name,
-                        monitor_tool_name=self.monitor_tool_name,
-                    )
-        planner_output.tool_calls = _hydrate_monitor_tool_calls(
-            planner_output.tool_calls,
-            state,
-            self.monitor_tool_name,
-        )
+        if parse_ok:
+            planner_output.tool_calls = _hydrate_monitor_tool_calls(
+                planner_output.tool_calls,
+                state,
+                self.monitor_tool_name,
+            )
         if parse_ok and blocked is None:
             blocked = _planner_action_block(
                 state=state,
@@ -303,9 +305,18 @@ class AgenticRobotLoop:
                     monitor_error = monitor_update.monitor_error
 
         control_status = _apply_control_results(state, tool_results, events=produced_events)
-        if control_status is not None:
-            monitor_status = state.monitor_status
-            monitor_error = state.monitor_error
+        if control_status is not None and control_status.monitor_status is not None:
+            monitor_status = control_status.monitor_status
+            monitor_error = control_status.monitor_error
+            if control_status.affected_subtask is not None:
+                _mark_subtask_status(
+                    state,
+                    control_status.affected_subtask,
+                    control_status.affected_subtask_index,
+                    control_status.monitor_status,
+                    subtasks=effective_subtasks,
+                    statuses=effective_subtask_statuses,
+                )
 
         state.last_tool_results = tool_results
         state.environment = self._merge_environment(state.environment, tool_results)
@@ -362,6 +373,11 @@ class AgenticRobotLoop:
         if parse_ok and state.phase not in {AgenticPhase.ERROR, AgenticPhase.DONE}:
             state.phase = AgenticPhase.RESPONSE
         if state.pending_events:
+            state.reason_requested = True
+        if parse_ok and _passive_plan_needs_followup_reason(
+            state,
+            planner_output,
+        ):
             state.reason_requested = True
 
         result = AgenticStepResult(
@@ -729,7 +745,10 @@ class AgenticRobotLoop:
                 state,
                 saw_monitor_feedback=saw_monitor_feedback,
             )
-        elif state.monitor_status in {MonitorStatus.SUCCESS, MonitorStatus.FAILED}:
+        elif _active_execution_running(state.active_execution) and state.monitor_status in {
+            MonitorStatus.SUCCESS,
+            MonitorStatus.FAILED,
+        }:
             state.awaiting_monitor = False
             _finish_active_execution(state, state.monitor_status, state.monitor_error)
         return _ExecutionStep(parse_ok=True, parse_error=None)
@@ -909,7 +928,23 @@ def _task_complete_result(
     parse_ok = planner_output.parse_ok
     parse_error = planner_output.parse_error
     produced_events: list[AgenticEvent] = []
-    if planner_output.tool_calls:
+    if planner_output.decision not in {None, "complete"}:
+        parse_ok = False
+        parse_error = (
+            "planner cannot combine task_complete=true with "
+            f"decision={planner_output.decision!r}"
+        )
+        state.phase = AgenticPhase.ERROR
+        _queue_event_if_reasonable(
+            state,
+            _event(
+                "planner_inconsistent",
+                {"error": parse_error, "subtask": state.current_subtask},
+                source="planner",
+            ),
+            events=produced_events,
+        )
+    elif planner_output.tool_calls:
         parse_ok = False
         parse_error = "planner cannot combine task_complete=true with tool_calls"
         state.phase = AgenticPhase.ERROR
@@ -945,9 +980,9 @@ def _task_complete_result(
         )
     else:
         state.phase = AgenticPhase.DONE
-    if planner_output.current_subtask:
+    if parse_ok and planner_output.current_subtask:
         state.current_subtask = planner_output.current_subtask
-    if planner_output.subtask_index is not None:
+    if parse_ok and planner_output.subtask_index is not None:
         state.subtask_index = planner_output.subtask_index
     state.last_tool_results = []
     state.awaiting_monitor = _active_execution_running(state.active_execution)
@@ -1165,6 +1200,176 @@ def _blocked_non_execute_action_tool_call(
     return None
 
 
+def _blocked_monitor_without_active_execution(
+    tool_calls: list[ToolCall],
+    *,
+    active_execution: ActiveExecution | None,
+    monitor_tool_name: str,
+) -> _PlannerBlock | None:
+    if active_execution is not None and _active_execution_running(active_execution):
+        return None
+    for tool_call in tool_calls:
+        if _is_monitor_call(tool_call, monitor_tool_name):
+            return _PlannerBlock(
+                (
+                    "planner requested monitor but no active execution is running; "
+                    "use decision=\"execute\" to start the selected subtask"
+                ),
+                event_type="planner_invalid_monitor",
+            )
+    return None
+
+
+def _blocked_planner_execute_tool_call(
+    tool_calls: list[ToolCall],
+    *,
+    execute_tool_name: str,
+) -> _PlannerBlock | None:
+    if not any(_is_execute_call(tool_call, execute_tool_name) for tool_call in tool_calls):
+        return None
+    return _PlannerBlock(
+        (
+            "planner wrote an execute tool_call directly; use decision=\"execute\" "
+            "and subtask_index so the controller starts exactly one selected action"
+        ),
+        event_type="planner_blocked_execute",
+    )
+
+
+def _blocked_execute_with_control_tool(
+    planner_output: AgenticPlannerOutput,
+) -> _PlannerBlock | None:
+    if planner_output.decision != "execute":
+        return None
+    for tool_call in planner_output.tool_calls:
+        if tool_call.name in CONTROL_TOOL_NAMES:
+            return _PlannerBlock(
+                (
+                    "planner cannot combine decision=\"execute\" with a control tool; "
+                    "choose either start the selected action or stop/cancel the current task"
+                ),
+                event_type="planner_inconsistent",
+            )
+    return None
+
+
+def _blocked_execute_decision_while_active(
+    *,
+    state: AgenticSessionState,
+    planner_output: AgenticPlannerOutput,
+) -> _PlannerBlock | None:
+    if planner_output.decision != "execute":
+        return None
+    if not _active_execution_running(state.active_execution):
+        return None
+    return _PlannerBlock(
+        (
+            "planner selected decision=\"execute\" while active_execution is running "
+            f"for {state.active_execution.subtask!r}; wait, observe, monitor, or cancel before executing again"
+        ),
+        event_type="planner_blocked_execute",
+    )
+
+
+def _prepare_planner_tool_calls(
+    *,
+    state: AgenticSessionState,
+    planner_output: AgenticPlannerOutput,
+    available_tools: list[JsonDict],
+    current_subtask: str | None,
+    subtask_index: int | None,
+    execute_tool_name: str,
+    monitor_tool_name: str,
+) -> _PlannerBlock | None:
+    block = (
+        _blocked_planner_execute_tool_call(
+            planner_output.tool_calls,
+            execute_tool_name=execute_tool_name,
+        )
+        or _blocked_unavailable_tool_call(
+            planner_output.tool_calls,
+            available_tools=available_tools,
+        )
+        or _blocked_execute_with_control_tool(planner_output)
+        or _blocked_execute_decision_while_active(
+            state=state,
+            planner_output=planner_output,
+        )
+        or _planner_structure_block(
+            state=state,
+            planner_output=planner_output,
+            current_subtask=current_subtask,
+        )
+    )
+    if block is not None:
+        return block
+
+    block = _ensure_execute_tool_call_if_requested(
+        planner_output=planner_output,
+        available_tools=available_tools,
+        current_subtask=current_subtask,
+        subtask_index=subtask_index,
+        execute_tool_name=execute_tool_name,
+    )
+    if block is not None:
+        return block
+
+    planner_output.tool_calls = _normalize_monitor_tool_calls(
+        planner_output.tool_calls,
+        current_subtask=current_subtask,
+        subtask_index=subtask_index,
+        monitor_tool_name=monitor_tool_name,
+    )
+    planner_output.tool_calls = _drop_premature_monitor_calls_when_executing(
+        planner_output.tool_calls,
+        active_execution=state.active_execution,
+        execute_tool_name=execute_tool_name,
+        monitor_tool_name=monitor_tool_name,
+    )
+    return None
+
+
+def _blocked_unavailable_tool_call(
+    tool_calls: list[ToolCall],
+    *,
+    available_tools: list[JsonDict],
+) -> _PlannerBlock | None:
+    if not available_tools:
+        return None
+    available = _available_tool_names(available_tools)
+    for tool_call in tool_calls:
+        if _tool_call_is_available(tool_call, available):
+            continue
+        requested = _display_tool_call_name(tool_call)
+        allowed = ", ".join(sorted(available.canonical))
+        return _PlannerBlock(
+            (
+                f"planner requested unavailable tool {requested!r}; "
+                f"use only Available tools: {allowed}"
+            ),
+            event_type="planner_invalid_tool",
+        )
+    return None
+
+
+def _drop_premature_monitor_calls_when_executing(
+    tool_calls: list[ToolCall],
+    *,
+    active_execution: ActiveExecution | None,
+    execute_tool_name: str,
+    monitor_tool_name: str,
+) -> list[ToolCall]:
+    if _active_execution_running(active_execution):
+        return tool_calls
+    if not any(_is_execute_call(tool_call, execute_tool_name) for tool_call in tool_calls):
+        return tool_calls
+    return [
+        tool_call
+        for tool_call in tool_calls
+        if not _is_monitor_call(tool_call, monitor_tool_name)
+    ]
+
+
 def _ensure_execute_tool_call_if_requested(
     *,
     planner_output: AgenticPlannerOutput,
@@ -1230,11 +1435,50 @@ def _execute_tool_call_from_available_tools(
     return None
 
 
+def _available_tool_names(available_tools: list[JsonDict]) -> _AvailableToolNames:
+    canonical: set[str] = set()
+    short_counts: dict[str, int] = {}
+    for tool in available_tools:
+        name = _optional_str(tool.get("name"))
+        namespace = _optional_str(tool.get("namespace"))
+        canonical_name = _optional_str(tool.get("canonical_name"))
+        if name:
+            short_counts[name] = short_counts.get(name, 0) + 1
+            canonical.add(name if namespace is None else f"{namespace}___{name}")
+        if canonical_name:
+            canonical.add(canonical_name)
+            _, canonical_short_name = split_qualified_tool_name(canonical_name)
+            if canonical_short_name and canonical_short_name != name:
+                short_counts[canonical_short_name] = short_counts.get(canonical_short_name, 0) + 1
+    return _AvailableToolNames(canonical=canonical, short_counts=short_counts)
+
+
+def _tool_call_is_available(tool_call: ToolCall, available: _AvailableToolNames) -> bool:
+    if _tool_call_key(tool_call) in available.canonical:
+        return True
+    return tool_call.namespace is None and available.short_counts.get(tool_call.name) == 1
+
+
+def _tool_call_key(tool_call: ToolCall) -> str:
+    if tool_call.namespace:
+        return f"{tool_call.namespace}___{tool_call.name}"
+    return tool_call.name
+
+
+def _display_tool_call_name(tool_call: ToolCall) -> str:
+    return _tool_call_key(tool_call)
+
+
 def _is_execute_call(tool_call: ToolCall, execute_tool_name: str) -> bool:
     namespace, name = split_qualified_tool_name(execute_tool_name)
     if tool_call.name == name and (namespace is None or tool_call.namespace == namespace):
         return True
     return False
+
+
+def _is_monitor_call(tool_call: ToolCall, monitor_tool_name: str) -> bool:
+    namespace, name = split_qualified_tool_name(monitor_tool_name)
+    return tool_call.name == name and (namespace is None or tool_call.namespace == namespace)
 
 
 def _is_action_tool_call(
@@ -1288,20 +1532,19 @@ def _looks_like_action_tool_name(name: str) -> bool:
     return any(token in unqualified for token in action_tokens)
 
 
-def _normalize_subtask_identity_tool_calls(
+def _normalize_monitor_tool_calls(
     tool_calls: list[ToolCall],
     *,
     current_subtask: str | None,
     subtask_index: int | None,
-    execute_tool_name: str,
     monitor_tool_name: str,
 ) -> list[ToolCall]:
     normalized: list[ToolCall] = []
     for tool_call in tool_calls:
-        if not (_is_execute_call(tool_call, execute_tool_name) or tool_call.name == monitor_tool_name):
+        if not _is_monitor_call(tool_call, monitor_tool_name):
             normalized.append(tool_call)
             continue
-        arguments = dict(tool_call.arguments)
+        arguments: JsonDict = {}
         if current_subtask:
             arguments["subtask"] = current_subtask
         if subtask_index is not None:
@@ -1342,6 +1585,10 @@ def _resolve_step_plan(
     current_subtask = planner_output.current_subtask
     if not current_subtask and subtask_index is not None and 0 <= subtask_index < len(subtasks):
         current_subtask = subtasks[subtask_index]
+    if not current_subtask and subtask_index is None:
+        subtask_index = _first_unfinished_subtask_index(subtask_statuses)
+        if subtask_index is not None and subtask_index < len(subtasks):
+            current_subtask = subtasks[subtask_index]
     return _StepPlan(
         subtasks=subtasks,
         subtask_statuses=subtask_statuses,
@@ -1410,7 +1657,6 @@ def _planner_structure_block(
     state: AgenticSessionState,
     planner_output: AgenticPlannerOutput,
     current_subtask: str | None,
-    execute_tool_name: str,
 ) -> _PlannerBlock | None:
     return (
         _blocked_replan_while_active(
@@ -1428,11 +1674,6 @@ def _planner_structure_block(
         or _blocked_active_current_subtask_mismatch(
             state=state,
             current_subtask=current_subtask,
-        )
-        or _blocked_execute_subtask_mismatch(
-            planner_output.tool_calls,
-            current_subtask,
-            execute_tool_name,
         )
     )
 
@@ -1456,6 +1697,11 @@ def _planner_action_block(
             monitor_tool_name=monitor_tool_name,
             execute_tool_name=execute_tool_name,
             fetch_env_tool_name=fetch_env_tool_name,
+        )
+        or _blocked_monitor_without_active_execution(
+            planner_output.tool_calls,
+            active_execution=state.active_execution,
+            monitor_tool_name=monitor_tool_name,
         )
         or _blocked_non_execute_action_tool_call(
             planner_output.tool_calls,
@@ -1621,28 +1867,6 @@ def _blocked_execute_completed_subtask(
     )
 
 
-def _blocked_execute_subtask_mismatch(
-    tool_calls: list[ToolCall],
-    current_subtask: str | None,
-    execute_tool_name: str,
-) -> _PlannerBlock | None:
-    if not current_subtask:
-        return None
-    for tool_call in tool_calls:
-        if not _is_execute_call(tool_call, execute_tool_name):
-            continue
-        requested = _optional_str(tool_call.arguments.get("subtask"))
-        if requested and requested != current_subtask:
-            return _PlannerBlock(
-                (
-                    "execute tool subtask does not match current_subtask: "
-                    f"current_subtask={current_subtask!r}, execute.subtask={requested!r}"
-                ),
-                event_type="planner_inconsistent",
-            )
-    return None
-
-
 def _hydrate_monitor_tool_calls(
     tool_calls: list[ToolCall],
     state: AgenticSessionState,
@@ -1652,11 +1876,10 @@ def _hydrate_monitor_tool_calls(
         return tool_calls
     hydrated: list[ToolCall] = []
     for tool_call in tool_calls:
-        if tool_call.name != monitor_tool_name:
+        if not _is_monitor_call(tool_call, monitor_tool_name):
             hydrated.append(tool_call)
             continue
         arguments = dict(_monitor_arguments(state))
-        arguments.update(tool_call.arguments)
         if not arguments.get("execution_id") and state.active_execution.execution_id:
             arguments["execution_id"] = state.active_execution.execution_id
         if not arguments.get("monitor_id") and state.active_execution.monitor_id:
@@ -1677,7 +1900,7 @@ def _apply_control_results(
     tool_results: list[ToolResult],
     *,
     events: list[AgenticEvent] | None = None,
-) -> MonitorStatus | None:
+) -> _ControlUpdate | None:
     control_result = next(
         (
             tool_result
@@ -1688,26 +1911,46 @@ def _apply_control_results(
     )
     if control_result is None:
         return None
-    state.monitor_status = MonitorStatus.FAILED
-    state.monitor_error = f"{control_result.tool_name} requested"
-    if state.active_execution is not None:
+    monitor_error = f"{control_result.tool_name} requested"
+    if _active_execution_running(state.active_execution):
+        affected_subtask = state.active_execution.subtask
+        affected_subtask_index = state.active_execution.subtask_index
+        state.monitor_status = MonitorStatus.FAILED
+        state.monitor_error = monitor_error
         _finish_active_execution(state, MonitorStatus.FAILED, state.monitor_error)
+        event_type = "monitor_failed"
+        event_data: JsonDict = {
+            "status": MonitorStatus.FAILED.value,
+            "tool_name": control_result.tool_name,
+            "error": state.monitor_error,
+            "subtask": affected_subtask,
+        }
+        if affected_subtask_index is not None:
+            event_data["subtask_index"] = affected_subtask_index
+        update = _ControlUpdate(
+            monitor_status=MonitorStatus.FAILED,
+            monitor_error=state.monitor_error,
+            affected_subtask=affected_subtask,
+            affected_subtask_index=affected_subtask_index,
+        )
     else:
         state.awaiting_monitor = False
+        event_type = "control_requested"
+        event_data = {
+            "tool_name": control_result.tool_name,
+            "message": monitor_error,
+        }
+        update = _ControlUpdate(monitor_status=None, monitor_error=None)
     _queue_event_if_reasonable(
         state,
         _event(
-            "monitor_failed",
-            {
-                "status": MonitorStatus.FAILED.value,
-                "tool_name": control_result.tool_name,
-                "error": state.monitor_error,
-            },
+            event_type,
+            event_data,
             source=control_result.namespace or control_result.tool_name,
         ),
         events=events,
     )
-    return MonitorStatus.FAILED
+    return update
 
 
 def _apply_monitor_result(
@@ -1853,6 +2096,27 @@ def _selected_subtask_status(
     return subtask_statuses[index] if index < len(subtask_statuses) else SubtaskStatus.PENDING
 
 
+def _passive_plan_needs_followup_reason(
+    state: AgenticSessionState,
+    planner_output: AgenticPlannerOutput,
+) -> bool:
+    if planner_output.task_complete or planner_output.tool_calls:
+        return False
+    if _active_execution_running(state.active_execution):
+        return False
+    if not state.current_subtask:
+        return False
+    if planner_output.decision in {"observe", "wait", "cancel", "ask_user", "noop"}:
+        return False
+    status = _selected_subtask_status(
+        state.subtasks,
+        state.subtask_statuses,
+        state.current_subtask,
+        state.subtask_index,
+    )
+    return status is not SubtaskStatus.SUCCESS
+
+
 def _advance_current_after_completed_success(state: AgenticSessionState) -> None:
     if _active_execution_running(state.active_execution):
         return
@@ -1901,6 +2165,16 @@ def _next_pending_subtask_index(
             return index
     for index, status in enumerate(subtask_statuses):
         if status is SubtaskStatus.PENDING:
+            return index
+    return None
+
+
+def _first_unfinished_subtask_index(subtask_statuses: list[SubtaskStatus]) -> int | None:
+    for index, status in enumerate(subtask_statuses):
+        if status is SubtaskStatus.PENDING:
+            return index
+    for index, status in enumerate(subtask_statuses):
+        if status is not SubtaskStatus.SUCCESS:
             return index
     return None
 

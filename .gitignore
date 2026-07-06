@@ -9,5 +9,6 @@ dist/
 venv/
 
 examples/config.openai.yaml
+examples/config.dual_franka.runtime.yaml
 runs/
 

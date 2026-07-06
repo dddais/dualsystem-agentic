@@ -25,13 +25,14 @@ been removed; this adapter targets the runtime API only.
 |------|--------------|-----------|
 | `fetch_env` | hidden by default | structured scene/runtime state provider, only when configured |
 | `monitor` | `POST /monitors/status` | returns `running` / `success` / `failed` |
-| `execute` | `POST /executions` + `POST /monitors/status` | starts a subtask, returns `execution_id` and `monitor_id` |
+| `execute` | `POST /executions` + initial `POST /monitors/status` query | controller-started subtask; returns `execution_id`, `monitor_id`, and initial status |
 | `stop_task` | `POST /control/stop` | stop |
 | `reset_task` | hidden by default; `POST /control/reset` when enabled | reset |
 | `emergency_stop` | `POST /control/emergency_stop` | emergency stop |
 
-The project exposes these to the VLM as canonical names such as
-`dual_franka___execute`.
+The agent loop starts robot motion with `decision="execute"` and injects the
+configured execute tool call. The VLM should not write `dual_franka___execute`
+tool calls directly.
 
 ## Configuration
 

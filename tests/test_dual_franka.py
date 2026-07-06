@@ -82,7 +82,7 @@ def test_dual_franka_execute_identity_arguments_override_payload_passthrough():
     assert payload["prompt"] == "runtime specific prompt"
 
 
-def test_dual_franka_execute_auto_triggers_monitor():
+def test_dual_franka_execute_returns_initial_monitor_status():
     server = _load_dual_franka_server_module()
     server._LAST_EXECUTION.clear()
     client = _RecordingHTTPClient(

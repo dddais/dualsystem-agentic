@@ -41,11 +41,6 @@ def parse_agentic_planner_output(text: str) -> AgenticPlannerOutput:
             data.get("subtask_index") if data.get("subtask_index") is not None else data.get("subtask_id")
         )
         should_execute_explicit = "should_execute" in data
-        should_execute = (
-            bool(data.get("should_execute", True))
-            if should_execute_explicit
-            else _default_should_execute(decision)
-        )
         task_complete = bool(data.get("task_complete", data.get("complete", decision == "complete")))
     except (TypeError, ValueError) as exc:
         return AgenticPlannerOutput(
@@ -94,7 +89,7 @@ def parse_agentic_planner_output(text: str) -> AgenticPlannerOutput:
         current_subtask=current_subtask,
         subtask_index=subtask_index,
         subtasks=subtasks,
-        should_execute=should_execute,
+        should_execute=False,
         should_execute_explicit=should_execute_explicit,
         task_complete=task_complete,
         decision=decision,
@@ -189,10 +184,6 @@ def _optional_decision(value: Any | None) -> str | None:
         allowed = ", ".join(sorted(_VALID_DECISIONS))
         raise ValueError(f"Unsupported planner decision: {decision!r}. Expected one of: {allowed}")
     return decision
-
-
-def _default_should_execute(decision: str | None) -> bool:
-    return False
 
 
 def _optional_int(value: Any) -> int | None:

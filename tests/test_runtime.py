@@ -178,7 +178,6 @@ def test_online_runtime_resets_session_state_between_tasks():
                 {
                     "subtasks": [f"{planner_input.task} part"],
                     "subtask_index": 0,
-                    "should_execute": False,
                 }
             )
         return json.dumps({"task_complete": True})
@@ -199,12 +198,53 @@ def test_online_runtime_resets_session_state_between_tasks():
     assert interaction.shutdown_count == 1
 
 
+def test_online_runtime_immediately_reasons_after_initial_plan_only_output(monkeypatch):
+    planner_calls = []
+
+    def planner(planner_input):
+        planner_calls.append(planner_input)
+        if len(planner_calls) == 1:
+            return json.dumps(
+                {
+                    "subtasks": [
+                        "Pick up the blue bowl",
+                        "Pick up the pink bowl",
+                        "Place all items into the metal basket",
+                    ],
+                }
+            )
+        return json.dumps({"task_complete": True})
+
+    interaction = ScriptedInteraction(["clean table", None])
+    runtime = OnlineAgentRuntime(
+        _loop(planner),
+        interaction=interaction,
+        max_steps=2,
+        reason_interval_s=1000,
+        monitor_poll_interval_s=1000,
+    )
+
+    def fail_if_runtime_sleeps(_seconds):
+        raise AssertionError("runtime slept after plan-only output")
+
+    monkeypatch.setattr("dualsystem_agentic.runtime.time.sleep", fail_if_runtime_sleeps)
+
+    summaries = runtime.serve_forever()
+
+    assert summaries[0].stop_reason == "task_complete"
+    assert len(planner_calls) == 2
+    assert planner_calls[1].current_subtask == "Pick up the blue bowl"
+    assert planner_calls[1].subtask_index == 0
+    assert [step.vlm_called for step in interaction.steps] == [True, True]
+    assert interaction.steps[0].reason_requested is True
+    assert interaction.steps[1].task_complete is True
+
+
 def test_online_runtime_marks_max_steps_and_keeps_waiting():
     def planner(planner_input):
         return json.dumps(
             {
                 "current_subtask": f"work on {planner_input.task}",
-                "should_execute": False,
             }
         )
 
@@ -243,9 +283,7 @@ def test_online_runtime_does_not_count_monitor_polls_against_max_steps():
         if len(planner_calls) == 1:
             return json.dumps(
                 {
-                    "tool_calls": [
-                        {"namespace": "demo", "name": "execute", "arguments": {"subtask": "pick cup"}}
-                    ],
+                    "decision": "execute",
                     "current_subtask": "pick cup",
                 }
             )
@@ -292,9 +330,7 @@ def test_online_runtime_monitor_event_triggers_next_reason_when_budget_remains()
         if len(planner_events) == 1:
             return json.dumps(
                 {
-                    "tool_calls": [
-                        {"namespace": "demo", "name": "execute", "arguments": {"subtask": "pick cup"}}
-                    ],
+                    "decision": "execute",
                     "current_subtask": "pick cup",
                 }
             )
@@ -402,13 +438,11 @@ def test_online_runtime_monitor_timeout_event_triggers_replan_when_budget_remain
         if len(planner_events) == 1:
             return json.dumps(
                 {
-                    "tool_calls": [
-                        {"namespace": "demo", "name": "execute", "arguments": {"subtask": "pick cup"}}
-                    ],
+                    "decision": "execute",
                     "current_subtask": "pick cup",
                 }
             )
-        return json.dumps({"current_subtask": "recover from timeout", "should_execute": False})
+        return json.dumps({"current_subtask": "recover from timeout"})
 
     interaction = ScriptedInteraction(["clean table", None])
     runtime = OnlineAgentRuntime(
@@ -535,6 +569,68 @@ def test_console_interaction_prints_update_when_current_advances_after_success()
     assert "  1. [pending] place cup <- current" in text
 
 
+def test_console_interaction_does_not_display_rejected_planner_replan():
+    output = io.StringIO()
+    interaction = ConsoleInteractionLayer(
+        input_stream=io.StringIO(),
+        output_stream=output,
+    )
+    accepted_plan = ["pick bowl", "place plate", "move basket"]
+
+    interaction.show_task_started("clean the table", "session_0001")
+    interaction.show_step(
+        _step_with_plan(
+            0,
+            accepted_plan,
+            1,
+            [SubtaskStatus.SUCCESS, SubtaskStatus.PENDING, SubtaskStatus.PENDING],
+        )
+    )
+    interaction.show_step(
+        AgenticStepResult(
+            task="clean the table",
+            step_index=1,
+            planner_input=AgenticPlannerInput(
+                task="clean the table",
+                subtasks=accepted_plan,
+                subtask_index=1,
+                subtask_statuses=[
+                    SubtaskStatus.SUCCESS,
+                    SubtaskStatus.PENDING,
+                    SubtaskStatus.PENDING,
+                ],
+            ),
+            planner_output=AgenticPlannerOutput(
+                raw_output=json.dumps(
+                    {
+                        "subtasks": ["place plate", "move basket"],
+                        "subtask_index": 0,
+                    }
+                ),
+                subtasks=["place plate", "move basket"],
+                subtask_index=0,
+                parse_ok=True,
+            ),
+            current_subtask="place plate",
+            subtask_index=1,
+            subtask_statuses=[
+                SubtaskStatus.SUCCESS,
+                SubtaskStatus.PENDING,
+                SubtaskStatus.PENDING,
+            ],
+            parse_ok=False,
+            parse_error="planner revised subtasks but removed completed subtask(s)",
+        )
+    )
+
+    text = output.getvalue()
+    assert text.count("subtask_list initialized:") == 1
+    assert text.count("subtask_list updated:") == 0
+    assert "  0. [success] pick bowl" in text
+    assert "  0. [success] place plate" not in text
+    assert "planner revised subtasks but removed completed subtask" in text
+
+
 def test_online_runtime_jsonl_logger_records_each_task_session(tmp_path):
     image_payload = base64.b64encode(b"frame bytes").decode("ascii")
 
@@ -543,7 +639,6 @@ def test_online_runtime_jsonl_logger_records_each_task_session(tmp_path):
             return json.dumps(
                 {
                     "current_subtask": f"work on {planner_input.task}",
-                    "should_execute": False,
                 }
             )
         return json.dumps({"task_complete": True})
