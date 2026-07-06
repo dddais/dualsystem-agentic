@@ -2,10 +2,9 @@
 """Run a config-driven online agentic robot process.
 
 This is the recommended script for robot deployment/debugging. It does not
-hard-code a robot. Switch robots by switching the config:
+hard-code a robot. Switch deployments by switching the config:
 
-    PYTHONPATH=src python examples/run_online_robot.py --config examples/config.mock.yaml
-    PYTHONPATH=src python examples/run_online_robot.py --config examples/config.x2robot.yaml
+    python examples/run_online_robot.py --config examples/config.dual_franka.runtime.yaml
 
 The config controls VLM, MCP servers/tools, executor, dataloader, interaction,
 logging, and loop limits.
@@ -59,8 +58,8 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Run an online agentic robot from config.")
     parser.add_argument(
         "--config",
-        default="examples/config.mock.yaml",
-        help="YAML/JSON config path. Default uses the offline mock robot.",
+        default="examples/config.dual_franka.runtime.yaml",
+        help="YAML/JSON config path.",
     )
     parser.add_argument("--max-steps", type=int, default=None, help="Override loop.max_steps.")
     parser.add_argument("--log-dir", default=None, help="Enable logging and override logging.root_dir.")

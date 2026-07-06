@@ -68,16 +68,15 @@ def test_prompt_describes_async_execute_monitor_contract():
     assert 'set decision="execute"' in prompt
     assert "controller fills" in prompt
     assert "Do not write an execute tool_call yourself" in prompt
-    assert "Decision policy:" in prompt
-    assert "Failure recovery:" in prompt
-    assert '"tool_calls" empty or omitted' in prompt
-    assert "Reuse existing plans unless task, scene, safety" in prompt
-    assert "Do not invent hidden objects" in prompt
-    assert "After a failed or timed-out action, do not mark it complete" in prompt
+    assert "Executable subtask constraints:" in prompt
+    assert 'Use only tools from "Available tools"' in prompt
+    assert '"tool_calls": [' in prompt
+    assert "Use the attached images to name visible objects" in prompt
     assert "Step guidance:" in prompt
     assert "The previous action succeeded" in prompt
     assert "Do not execute a subtask already marked success" in prompt
-    assert "one object or one tightly coupled object group" in prompt
+    assert "one object or one tightly coupled" in prompt
+    assert "object group" in prompt
     assert '"grip", "pick",' in prompt
     assert "pink cup" not in prompt
     assert "conditional or vague subtasks" in prompt
@@ -85,12 +84,12 @@ def test_prompt_describes_async_execute_monitor_contract():
     assert "Keep successful subtasks" in prompt
     assert "0. [success] pick cup" in prompt
     assert "1. [pending] place cup <- current" in prompt
-    assert '"decision": "<one of: plan, execute, observe, wait, replan, cancel, complete, ask_user, noop>"' in prompt
+    assert '"decision": "plan|execute|observe|wait|replan|cancel|complete|ask_user|noop"' in prompt
     assert "should_execute" not in prompt
     assert "Scene graph" in prompt
     assert "Visual observations:" in prompt
     assert "front, wrist" in prompt
-    assert "Prefer Scene graph for structured object identities and relations when present" in prompt
+    assert "Use Scene graph only when present" in prompt
     assert "Session memory / Runtime state:" in prompt
     assert "Controller phase:" not in prompt
     assert "Step index:" not in prompt

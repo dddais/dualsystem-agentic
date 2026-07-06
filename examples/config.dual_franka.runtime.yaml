@@ -1,6 +1,3 @@
-# dual_franka runtime deployment config.
-# Robot side:
-#   robot-runtime --port 8767
 # Agent side:
 #   PYTHONPATH=src python examples/run_online_robot.py --config examples/config.dual_franka.runtime.yaml
 
@@ -119,7 +116,7 @@ dataloader:
   label: main
 
 interaction:
-  provider: console
+  provider: console # tui or console
   show_raw_json: false
 
 logging:

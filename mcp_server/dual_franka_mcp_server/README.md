@@ -90,9 +90,9 @@ once absent from that catalog, the VLM will no longer see them.
 ## Local smoke test
 
 ```bash
-robot-runtime --port 8767
+python robot_runtime/robot_runtime/api/app.py --port 8767
 
-PYTHONPATH=src python examples/run_online_robot.py \
+python examples/run_online_robot.py \
   --config examples/config.dual_franka.runtime.yaml \
   --tasks "pick up the cube" \
   --print-components
