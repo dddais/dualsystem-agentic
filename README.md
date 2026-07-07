@@ -203,31 +203,7 @@ python examples/run_online_robot.py \
 - `mcp.servers[].env.DUAL_FRANKA_RUNTIME_URL`
 - `dataloader.url`
 
-建议交付时把真实地址和密钥写成环境变量，例如：
 
-```yaml
-vlm:
-  provider: openai_compatible
-  model: gpt-4o
-  base_url: ${OPENAI_BASE_URL}
-  api_key: ${OPENAI_API_KEY}
-
-mcp:
-  provider: sdk
-  servers:
-    - namespace: dual_franka
-      transport: stdio
-      command: python
-      args: ["mcp_server/dual_franka_mcp_server/server.py"]
-      env:
-        DUAL_FRANKA_RUNTIME_URL: ${DUAL_FRANKA_RUNTIME_URL}
-
-dataloader:
-  provider: http
-  url: ${DUAL_FRANKA_RUNTIME_URL}/observations/latest
-  image_key: concatenated_image
-  label: main
-```
 
 健康检查：
 
@@ -539,7 +515,7 @@ python examples/visualize_run_video.py \
   --run-dir runs/run_YYYYMMDD_HHMMSS
 ```
 
-## 交付注意事项
+## 注意事项
 
 - `python robot_runtime/robot_runtime/api/app.py --host 0.0.0.0` 会暴露控制接口，请只在受控网络中使用，并为真实硬件增加访问控制和急停策略。
 - 当前 Dual-Franka driver 是 placeholder；只有接入真实 `RobotDriver` 后才会移动硬件。
