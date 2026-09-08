@@ -31,7 +31,7 @@ def normalize_status(value: object | None, *, default: str = STATUS_RUNNING) -> 
     if value is None:
         return default
     text = str(value).strip().lower()
-    if text in {"running", "executing", "busy", "in_progress", "active", "started"}:
+    if text in {"running", "progress", "executing", "busy", "in_progress", "active", "started"}:
         return STATUS_RUNNING
     if text in {"success", "succeeded", "done", "completed", "complete", "finished"}:
         return STATUS_SUCCESS
@@ -48,12 +48,21 @@ class ExecutionRequest:
     metadata: JsonDict = field(default_factory=dict)
     options: JsonDict = field(default_factory=dict)
     raw_request: JsonDict = field(default_factory=dict)
+    target_queries: list[str] | None = None
+    execution_id: str | None = None
 
     @classmethod
     def from_payload(cls, payload: JsonDict) -> "ExecutionRequest":
         subtask = _text(payload.get("subtask") or payload.get("prompt") or payload.get("instruction"))
         if not subtask:
             raise ValueError("missing subtask")
+        queries = payload.get("target_queries")
+        if queries is not None:
+            if not isinstance(queries, list) or not 1 <= len(queries) <= 8 or any(
+                not isinstance(q, str) or not q.strip() for q in queries
+            ):
+                raise ValueError("target_queries must contain 1..8 nonempty strings")
+            queries = list(dict.fromkeys(q.strip() for q in queries))
         return cls(
             subtask=subtask,
             task=_text(payload.get("task")),
@@ -61,6 +70,8 @@ class ExecutionRequest:
             metadata=_dict_or_empty(payload.get("metadata")),
             options=_dict_or_empty(payload.get("options")),
             raw_request=dict(payload),
+            target_queries=queries,
+            execution_id=_text(payload.get("execution_id")),
         )
 
 

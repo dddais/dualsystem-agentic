@@ -13,6 +13,8 @@ if __package__ in {None, ""}:
 
 from fastapi import Body, FastAPI
 from fastapi.responses import JSONResponse, Response
+from contextlib import asynccontextmanager
+from starlette.concurrency import run_in_threadpool
 
 from robot_runtime.adapters.dual_franka.camera_provider import DualFrankaLocalFileCameraProvider
 from robot_runtime.adapters.dual_franka.monitor_provider import (
@@ -24,29 +26,36 @@ from robot_runtime.core.runtime import RobotRuntime
 
 
 def create_app(runtime: RobotRuntime) -> FastAPI:
-    app = FastAPI(title="Robot Runtime API")
+    @asynccontextmanager
+    async def lifespan(app):
+        yield
+        await run_in_threadpool(runtime.close)
+
+    # Sync routes run in Starlette's worker pool, leaving the event loop free
+    # for camera and stop requests while remote monitor I/O is pending.
+    app = FastAPI(title="Robot Runtime API", lifespan=lifespan)
 
     @app.get("/health")
-    async def health():
+    def health():
         return _ok(runtime.health())
 
     @app.get("/capabilities")
-    async def capabilities():
+    def capabilities():
         return _ok(runtime.capabilities())
 
     @app.get("/environment")
-    async def environment():
+    def environment():
         return _ok(runtime.environment())
 
     @app.get("/observations/latest")
-    async def observations_latest():
+    def observations_latest():
         try:
             return _ok(runtime.latest_observation().to_dict())
         except FileNotFoundError as exc:
             return _fail(str(exc), status=503)
 
     @app.get("/observations/latest/metadata")
-    async def observations_latest_metadata():
+    def observations_latest_metadata():
         try:
             frame = runtime.latest_observation()
         except FileNotFoundError as exc:
@@ -60,7 +69,7 @@ def create_app(runtime: RobotRuntime) -> FastAPI:
         return _ok(metadata)
 
     @app.get("/observations/latest/{camera}.jpg")
-    async def observations_latest_camera_jpeg(camera: str):
+    def observations_latest_camera_jpeg(camera: str):
         try:
             image = runtime.latest_observation_image(camera)
         except KeyError as exc:
@@ -78,7 +87,7 @@ def create_app(runtime: RobotRuntime) -> FastAPI:
         )
 
     @app.post("/executions")
-    async def executions(body: dict[str, Any]):
+    def executions(body: dict[str, Any]):
         try:
             execution = runtime.create_execution(body)
         except ValueError as exc:
@@ -88,7 +97,7 @@ def create_app(runtime: RobotRuntime) -> FastAPI:
         return _ok({"executed": execution.status != "failed", **execution.to_dict()})
 
     @app.post("/monitors/status")
-    async def monitors_status(body: dict[str, Any]):
+    def monitors_status(body: dict[str, Any]):
         try:
             monitor = runtime.monitor_status(body)
         except KeyError as exc:
@@ -100,19 +109,19 @@ def create_app(runtime: RobotRuntime) -> FastAPI:
         return _ok(monitor.to_dict())
 
     @app.post("/control/stop")
-    async def control_stop(body: dict[str, Any] | None = Body(default=None)):
+    def control_stop(body: dict[str, Any] | None = Body(default=None)):
         return _ok(runtime.stop(body or {}))
 
     @app.post("/control/reset")
-    async def control_reset():
+    def control_reset():
         return _ok(runtime.reset())
 
     @app.post("/control/emergency_stop")
-    async def control_emergency_stop():
+    def control_emergency_stop():
         return _ok(runtime.emergency_stop())
 
     @app.get("/")
-    async def root():
+    def root():
         return JSONResponse(
             {
                 "service": "robot_runtime",
@@ -170,6 +179,7 @@ def build_runtime_from_config(config: dict[str, Any]) -> RobotRuntime:
             start_path=str(monitor_config.get("start_path") or "/monitors/start"),
             status_path=str(monitor_config.get("status_path") or "/monitors/status"),
             stop_path=str(monitor_config.get("stop_path") or "/monitors/stop"),
+            activate_path=str(monitor_config.get("activate_path") or "/monitors/activate"),
         )
     else:
         raise ValueError(f"unsupported monitor.provider: {monitor_provider_name}")

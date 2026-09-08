@@ -103,6 +103,16 @@ class LoggingConfig:
 
 
 @dataclass
+class SimpleLoopConfig:
+    instruction_template: str = "pick the {target} and put it on yellow plate"
+    default_target: str | None = None
+    first_result_timeout_s: float = 120.0
+    result_timeout_s: float = 120.0
+    max_execution_s: float = 300.0
+    require_steering: bool = True
+
+
+@dataclass
 class AppConfig:
     vlm: VLMConfig = field(default_factory=VLMConfig)
     executor: ExecutorConfig = field(default_factory=ExecutorConfig)
@@ -111,6 +121,7 @@ class AppConfig:
     dataloader: DataLoaderConfig = field(default_factory=DataLoaderConfig)
     interaction: InteractionConfig = field(default_factory=InteractionConfig)
     logging: LoggingConfig = field(default_factory=LoggingConfig)
+    simple_loop: SimpleLoopConfig = field(default_factory=SimpleLoopConfig)
 
     @classmethod
     def from_dict(cls, data: JsonDict) -> "AppConfig":
@@ -122,6 +133,7 @@ class AppConfig:
             dataloader=DataLoaderConfig(**_expand_env(data.get("dataloader") or {})),
             interaction=InteractionConfig(**(data.get("interaction") or {})),
             logging=LoggingConfig(**_expand_env(data.get("logging") or {})),
+            simple_loop=SimpleLoopConfig(**(data.get("simple_loop") or {})),
         )
 
 

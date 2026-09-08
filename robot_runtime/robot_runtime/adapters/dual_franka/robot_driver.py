@@ -23,6 +23,7 @@ class PlaceholderDualFrankaRobotDriver:
             "subtask_index": request.subtask_index,
             "metadata": request.metadata,
             "options": request.options,
+            "target_queries": request.target_queries,
             "timestamp": time.time(),
         }
         return {"executed": True, "placeholder": True, **self.last_execute_request}
@@ -67,4 +68,3 @@ class PlaceholderDualFrankaRobotDriver:
             "safe_placeholder": True,
             "extra_tools": [],
         }
-

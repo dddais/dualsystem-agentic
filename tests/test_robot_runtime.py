@@ -67,6 +67,7 @@ def test_runtime_execution_returns_stable_execution_and_monitor_ids(tmp_path):
 def test_runtime_monitor_status_rejects_mismatched_ids(tmp_path):
     runtime = _runtime(tmp_path)
     first = runtime.create_execution({"subtask": "pick up the cube"})
+    runtime.stop({"execution_id": first.execution_id})
     second = runtime.create_execution({"subtask": "place the cube"})
 
     with pytest.raises(ValueError):

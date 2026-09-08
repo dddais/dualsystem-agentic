@@ -25,3 +25,6 @@ The agent process does not import this package. It only needs the runtime URL,
 for example `DUAL_FRANKA_RUNTIME_URL=http://ROBOT_MACHINE_IP:8767`, and matching
 HTTP API contracts for `/executions`, `/monitors/status`, `/control/*`, and
 `/observations/latest`.
+# 当前接口约定补充
+
+简化键盘 loop、模板目标词和最新接口修复见 [使用说明](../docs/simple_loop.md) 与 [系统复查报告](../docs/system_contract_review.md)。`/executions` 接受独立的 `target_queries` 和可选客户端 `execution_id`；先等待 GRM 参考帧，再启动 driver。一个执行终态后应调用 `/control/stop` 再开始下一执行。

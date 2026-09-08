@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 import time
 import urllib.error
 import urllib.request
@@ -63,6 +64,9 @@ class LocalMemoryMonitorProvider:
         self._states[refreshed.monitor_id] = refreshed
         return refreshed
 
+    def activate(self, monitor: MonitorState) -> MonitorState:
+        return monitor
+
     def stop(self, monitor_id: str) -> JsonDict:
         state = self._states.get(monitor_id)
         if state is not None:
@@ -88,12 +92,14 @@ class RemoteHTTPMonitorProvider:
         start_path: str = "/monitors/start",
         status_path: str = "/monitors/status",
         stop_path: str = "/monitors/stop",
+        activate_path: str = "/monitors/activate",
     ) -> None:
         self.url = url.rstrip("/")
         self.timeout = timeout
         self.start_path = start_path
         self.status_path = status_path
         self.stop_path = stop_path
+        self.activate_path = activate_path
 
     def start(self, execution: ExecutionState, request: ExecutionRequest) -> MonitorState:
         data = self._request(
@@ -106,6 +112,8 @@ class RemoteHTTPMonitorProvider:
                 "subtask_index": execution.subtask_index,
                 "task": execution.task,
                 "metadata": execution.metadata,
+                "defer_inference": True,
+                **({"target_queries": request.target_queries} if request.target_queries is not None else {}),
             },
         )
         return _monitor_from_payload(data, fallback=execution)
@@ -121,6 +129,12 @@ class RemoteHTTPMonitorProvider:
                 "subtask_index": monitor.subtask_index,
             },
         )
+        return _monitor_from_payload(data, fallback=monitor)
+
+    def activate(self, monitor: MonitorState) -> MonitorState:
+        data = self._request("POST", self.activate_path, {
+            "execution_id": monitor.execution_id, "monitor_id": monitor.monitor_id,
+        })
         return _monitor_from_payload(data, fallback=monitor)
 
     def stop(self, monitor_id: str) -> JsonDict:
@@ -156,13 +170,22 @@ class RemoteHTTPMonitorProvider:
 
 
 def _monitor_from_payload(data: JsonDict, *, fallback: ExecutionState | MonitorState) -> MonitorState:
+    for key in ("monitor_id", "execution_id"):
+        if data.get(key) != getattr(fallback, key):
+            raise ValueError(f"remote monitor returned a different or missing {key}")
+    status = normalize_status(data.get("status"), default="invalid")
+    if status == "invalid":
+        raise ValueError("remote monitor returned an invalid or missing status")
+    progress = float(data.get("progress") or 0.0)
+    if not math.isfinite(progress) or not 0 <= progress <= 1:
+        raise ValueError("remote monitor progress must be finite and within [0, 1]")
     return MonitorState(
         monitor_id=str(data.get("monitor_id") or fallback.monitor_id),
         execution_id=str(data.get("execution_id") or fallback.execution_id),
         subtask=str(data.get("subtask") or fallback.subtask),
         subtask_index=data.get("subtask_index", fallback.subtask_index),
-        status=normalize_status(data.get("status")),
-        progress=float(data.get("progress") or 0.0),
+        status=status,
+        progress=progress,
         created_at=float(data.get("created_at") or getattr(fallback, "created_at", time.time())),
         updated_at=float(data.get("updated_at") or time.time()),
         error=data.get("error"),

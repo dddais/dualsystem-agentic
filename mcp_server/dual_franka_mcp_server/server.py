@@ -118,6 +118,9 @@ async def list_tools() -> list[types.Tool]:
                 "required": ["subtask"],
                 "properties": {
                     "subtask": {"type": "string", "description": "Subtask instruction to execute."},
+                    "subtask_index": {"type": "integer"},
+                    "execution_id": {"type": "string", "description": "Client execution ID for cancellation and idempotent retries."},
+                    "target_queries": {"type": "array", "minItems": 1, "maxItems": 8, "items": {"type": "string"}},
                     "task": {"type": "string", "description": "Optional long-horizon task context."},
                     "left_arm": {"type": "string", "description": "Optional left-arm role/hint."},
                     "right_arm": {"type": "string", "description": "Optional right-arm role/hint."},
@@ -134,7 +137,7 @@ async def list_tools() -> list[types.Tool]:
         types.Tool(
             name="stop_task",
             description="Stop the current dual-Franka task over HTTP.",
-            inputSchema={"type": "object", "required": [], "properties": {}},
+            inputSchema={"type": "object", "required": [], "properties": {"execution_id": {"type": "string"}}},
         ),
         types.Tool(
             name="emergency_stop",
@@ -173,7 +176,7 @@ async def _dispatch(client: httpx.AsyncClient, name: str, arguments: dict) -> di
     if name == "execute":
         return await _execute(client, arguments)
     if name == "stop_task":
-        return await _request(client, "POST", STOP_PATH)
+        return await _request(client, "POST", STOP_PATH, json_data=arguments or None)
     if name == "reset_task" and ENABLE_RESET:
         return await _request(client, "POST", RESET_PATH)
     if name == "emergency_stop":
@@ -223,6 +226,8 @@ async def _monitor(client: httpx.AsyncClient, arguments: dict) -> dict:
         "progress": data.get("progress"),
         "updated_at": data.get("updated_at"),
         "error": data.get("error"),
+        "poll_count": data.get("poll_count"),
+        "result": data.get("result", {}),
         "monitor": data,
     }
 
@@ -265,6 +270,10 @@ async def _execute(client: httpx.AsyncClient, arguments: dict) -> dict:
         "task_id": monitor_data.get("task_id", arguments.get("task_id")) or execution_id,
         "status": monitor_status,
         "monitor_status": monitor_status,
+        "progress": monitor_data.get("progress"),
+        "error": monitor_data.get("error"),
+        "poll_count": monitor_data.get("poll_count"),
+        "result": monitor_data.get("result", {}),
         "execute": execute_data,
         "monitor": monitor_data,
     }
@@ -310,7 +319,7 @@ def _build_execute_payload(arguments: dict) -> dict:
         "prompt": subtask,
         "instruction": subtask,
     }
-    for key in ("task", "subtask_index", "left_arm", "right_arm", "bimanual_mode", "metadata", "options"):
+    for key in ("task", "subtask_index", "execution_id", "target_queries", "left_arm", "right_arm", "bimanual_mode", "metadata", "options"):
         value = arguments.get(key)
         if value is not None:
             payload[key] = value
@@ -319,6 +328,9 @@ def _build_execute_payload(arguments: dict) -> dict:
     payload["subtask"] = subtask
     if arguments.get("subtask_index") is not None:
         payload["subtask_index"] = arguments["subtask_index"]
+    for key in ("execution_id", "target_queries"):
+        if arguments.get(key) is not None:
+            payload[key] = arguments[key]
     return payload
 
 
@@ -368,7 +380,7 @@ def _derive_monitor_status(data: dict) -> str:
 
 def _normalize_status_text(value: str) -> str | None:
     text = value.strip().lower()
-    if text in {"running", "executing", "busy", "in_progress", "started", "active"}:
+    if text in {"running", "progress", "executing", "busy", "in_progress", "started", "active"}:
         return "running"
     if text in {"success", "succeeded", "done", "completed", "complete", "finished", "idle_success"}:
         return "success"

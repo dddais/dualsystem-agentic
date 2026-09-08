@@ -12,6 +12,6 @@ monitor:
   timeout: 30.0
 
 safety:
+  monitor_ready_timeout_s: 30.0
   max_execution_s: 300
   require_estop_ready: false
-

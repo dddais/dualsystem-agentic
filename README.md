@@ -2,6 +2,10 @@
 
 `dualsystem-agentic` 是一个面向长程机器人任务的分布式 agentic 控制框架：VLM 负责任务规划，`MCP_tools` 负责动作与状态接口，Robot Runtime 负责机器人侧执行、图像和监控。
 
+无需 VLM 的键盘控制入口见 [最简三状态循环](docs/simple_loop.md)：输入目标物体名词（回车复用上一目标），按配置模板生成指令，执行并监控，中止恢复后等待下一次输入。
+
+基于现有部署系统接入真实 VLA、停止、复位和相机的方案见 [robot-bridge 真机接入方案](docs/robot_bridge_integration_plan.md)；该文档为设计方案，真实 Driver 尚未实现。
+
 ## 整体功能
 
 一句话：系统围绕一个全流程 loop 循环运行：获取用户长程任务，大脑 VLM 根据当前环境图像规划子任务，`execute` 执行子任务，`monitor` 监控结果，并用 monitor 状态驱动下一轮决策。
