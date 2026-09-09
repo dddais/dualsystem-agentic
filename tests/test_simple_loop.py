@@ -281,6 +281,66 @@ class SimpleLoopTests(unittest.TestCase):
             self.assertEqual([name for name, _ in client.calls][-2:], ["stop_task", "reset_task"])
             self.assertLessEqual(now[0], 2)
 
+    def test_strict_steering_error_explains_real_ambiguous_modes(self):
+        class AmbiguousTools(RecordingTools):
+            def call_tool(self, name, arguments=None, **kwargs):
+                response = super().call_tool(name, arguments, **kwargs)
+                if name == "execute":
+                    response.data["result"]["modes"] = {mode: {"steering": {
+                        "enabled": True, "applied": False, "degraded": True, "reason": "ambiguous",
+                    }} for mode in ("forward", "incremental")}
+                return response
+        client, logs = AmbiguousTools(["running"]), []
+        loop = SimpleRobotLoop(client, write=logs.append, sleep=lambda _: None)
+        loop.run_cycle("carrot")
+        self.assertEqual([name for name, _ in client.calls], ["execute", "stop_task", "reset_task"])
+        message = next(line for line in logs if line.startswith("[error]"))
+        self.assertIn("step=1", message)
+        self.assertIn("forward: reason=ambiguous", message)
+        self.assertIn("incremental: reason=ambiguous", message)
+
+    def test_allowed_fallback_warns_once_per_step_and_can_resume_steering(self):
+        class AmbiguousThenValidTools(RecordingTools):
+            def call_tool(self, name, arguments=None, **kwargs):
+                response = super().call_tool(name, arguments, **kwargs)
+                if name in {"execute", "monitor"}:
+                    # Two reads of the same first inference, then two new scores.
+                    response.data["poll_count"] = (1, 1, 2, 3)[self.poll_count - 1]
+                    if self.poll_count <= 2:
+                        response.data["result"]["modes"]["forward"]["steering"] = {
+                            "applied": False, "degraded": True, "reason": "ambiguous"}
+                return response
+        for terminal in ("success", "failed"):
+            with self.subTest(terminal=terminal):
+                client, logs = AmbiguousThenValidTools(["running"] * 3 + [terminal]), []
+                loop = SimpleRobotLoop(client, write=logs.append, sleep=lambda _: None,
+                    settings=SimpleLoopConfig(require_steering=False))
+                loop.run_cycle("carrot")
+                self.assertEqual([name for name, _ in client.calls],
+                    ["execute", "monitor", "monitor", "monitor", "stop_task", "reset_task"])
+                warnings = [line for line in logs if line.startswith("[warning]")]
+                self.assertEqual(len(warnings), 1)
+                self.assertIn("reason=ambiguous", warnings[0])
+                self.assertTrue(any("steering resumed at step=2" in line for line in logs))
+                self.assertFalse(any(line.startswith("[error]") for line in logs))
+
+    def test_allowed_fallback_still_recovers_on_stale_scores_or_branch_failure(self):
+        for terminal, result in (
+            ("running", {"result_age_s": 9999}),
+            ("failed", {"failure_reason": "branch_difference_exceeded",
+                        "comparison": {"difference": .3, "threshold": .2, "threshold_exceeded": True}}),
+        ):
+            class FailedTools(RecordingTools):
+                def call_tool(self, name, arguments=None, **kwargs):
+                    response = super().call_tool(name, arguments, **kwargs)
+                    if name == "execute":
+                        response.data["result"].update(result)
+                    return response
+            client = FailedTools([terminal])
+            loop = self.make_loop(client, settings=SimpleLoopConfig(require_steering=False))
+            loop.run_cycle("carrot")
+            self.assertEqual([name for name, _ in client.calls], ["execute", "stop_task", "reset_task"])
+
 
 if __name__ == "__main__":
     unittest.main()

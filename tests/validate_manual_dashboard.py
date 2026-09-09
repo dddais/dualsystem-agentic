@@ -62,6 +62,9 @@ def main():
     from robot_runtime.adapters.robot_bridge.camera_provider import RobotBridgeCameraProvider, CAMERA_VIEWS
     from robot_runtime.api.app import create_app
     from robot_runtime.core.runtime import RobotRuntime
+    from dualsystem_agentic.config import load_config
+
+    instruction = load_config(ROOT / "examples/config.simple_loop.manual.yaml").simple_loop.instruction_template.format(target="carrot")
 
     class SimulatedCamera:
         count = 0
@@ -118,7 +121,7 @@ def main():
                     expect(page.locator(".viewport.loaded")).to_have_count(3)
                     original_prompt = httpx.get(runtime_url + "/manual/status").json()["data"]["input"]["request_id"]
                     page.locator("#target").fill("carrot")
-                    expect(page.locator("#task-preview")).to_have_text("pick the carrot and put it on the plate")
+                    expect(page.locator("#task-preview")).to_have_text(instruction)
                     page.locator("#submit-target").click()
                     expect(page.locator("#ack")).to_have_text("已开始", timeout=10000)
                     expect(page.locator("#submit-target")).to_be_disabled()

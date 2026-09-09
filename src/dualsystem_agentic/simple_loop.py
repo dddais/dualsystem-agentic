@@ -21,6 +21,23 @@ class SimplePhase(str, Enum):
     RECOVERING = "recovering"
 
 
+def _steering_issues(result: JsonDict) -> list[str]:
+    modes = result.get("modes")
+    if not isinstance(modes, dict) or not modes:
+        return ["missing modes"]
+    issues = []
+    for mode, row in modes.items():
+        steering = row.get("steering") if isinstance(row, dict) else None
+        if not isinstance(steering, dict):
+            issues.append(f"{mode}: missing steering diagnostics")
+        elif steering.get("applied") is not True or steering.get("degraded") is not False:
+            reason = steering.get("reason") or (
+                "steering disabled" if steering.get("enabled") is False else "steering not applied or incomplete diagnostics"
+            )
+            issues.append(f"{mode}: reason={reason}, applied={steering.get('applied')}, degraded={steering.get('degraded')}")
+    return issues
+
+
 class SimpleRobotLoop:
     """One operator, one robot, one execution at a time.
 
@@ -132,6 +149,8 @@ class SimpleRobotLoop:
         self.identity = {"execution_id": "exec-" + uuid4().hex}
         started = last_advance = self.clock()
         last_step = 0
+        warned_steering_step = None
+        steering_was_unavailable = False
         self.phase = SimplePhase.EXECUTING
         try:
             self.write(f"[executing] {subtask}")
@@ -165,14 +184,20 @@ class SimpleRobotLoop:
                     step > 0 and float(age) > self.settings.result_timeout_s
                 )):
                     raise TimeoutError("monitor result is stale or has an invalid age")
-                if self.settings.require_steering and (step > 0 or status == "success"):
-                    modes = result.get("modes") or {}
-                    if not modes or any(
-                        row.get("steering", {}).get("applied") is not True
-                        or row.get("steering", {}).get("degraded") is not False
-                        for row in modes.values()
-                    ):
-                        raise RuntimeError("monitor result has missing or degraded attention steering")
+                if step > 0 or status == "success":
+                    issues = _steering_issues(result)
+                    if issues:
+                        detail = f"step={step}; " + "; ".join(issues)
+                        if self.settings.require_steering:
+                            raise RuntimeError(f"monitor result has missing or degraded attention steering: {detail}")
+                        if warned_steering_step != step:
+                            self.write(f"[warning] attention steering unavailable: {detail}; "
+                                       "require_steering=false, continuing with Monitor status")
+                            warned_steering_step = step
+                        steering_was_unavailable = True
+                    elif steering_was_unavailable:
+                        self.write(f"[monitor] attention steering resumed at step={step}")
+                        steering_was_unavailable = False
                 if data.get("error") or status not in {"running", "progress"}:
                     break
                 self.sleep(self.poll_interval_s)

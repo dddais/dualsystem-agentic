@@ -47,7 +47,13 @@ PYTHONPATH=src python -m dualsystem_agentic.simple_loop \
 
 `first_result_timeout_s` 限制首个评分的等待；`result_timeout_s` 检查结果年龄和评分轮数是否长期不变；`max_execution_s` 限制整轮时间。以上检查在工具返回后的循环中进行，单次网络调用还受 HTTP 超时约束。Runtime 另外在 driver 启动成功后按 `safety.max_execution_s` 启动独立定时器，即使客户端不再轮询也会尝试停止机器人。
 
-默认 `require_steering: true`：已提交评分必须包含每个模式的 `steering.applied=true`、`degraded=false`，否则进入中止恢复。只做 local_memory/无干预连通性测试时显式设为 false。Monitor 自身仍可配置 baseline 降级，但严格 loop 不会将降级结果作为正常成功接受。
+通用配置默认 `require_steering: true`：已提交评分必须包含每个模式的
+`steering.applied=true`、`degraded=false`，否则带上具体模式和原因进入中止恢复。
+Manual 配置使用 `false`，与 Monitor 的 `on_missing_bbox: baseline` 配合：SAM3
+漏检或候选歧义时允许该帧按无干预结果继续，每个异常评分轮次输出一次 warning；
+后续恢复有效 steering 时也输出提示。它不会关闭 Monitor 的 attention steering，
+也不会放宽终态、执行/评分超时或接口错误处理。local_memory/无干预测试也可设为
+false。需要每帧都施加干预的实验使用 true，严格模式不接受降级结果。
 
 ## 工具与接口
 

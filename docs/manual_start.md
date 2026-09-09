@@ -107,17 +107,23 @@ DUAL_FRANKA_TIMEOUT_S: 660.0
 ```yaml
 simple_loop:
   input_source: web
-  instruction_template: "pick the {target} and put it on the plate"
+  instruction_template: "pick the {target} and put it into the box"
   default_target: null
   first_result_timeout_s: 120.0
   result_timeout_s: 120.0
   max_execution_s: 300.0
-  require_steering: true
+  require_steering: false
 ```
 
-输入 `carrot` 会生成 `pick the carrot and put it on the plate`。按现场 VLA 固定指令
+输入 `carrot` 会生成 `pick the carrot and put it into the box`。按现场 VLA 固定指令
 调整模板，操作员在原 UI 选择对应指令。Loop 同时传 `target_queries: [carrot]` 给
 Monitor/SAM3，因此这条路径不依赖 steering 配置里的 `task_queries` 文本匹配。
+
+Manual 默认允许 Monitor 的 baseline 降级，避免首帧 SAM3 候选歧义就中止动作。
+`require_steering: false` 只控制 loop 是否因缺少有效干预而立即中止，不会关闭服务器
+的 steering。每个降级评分会打印模式与原因（例如 `reason=ambiguous`）；有效干预
+恢复后打印 resumed。成功/失败仍以 Monitor 状态为准，评分停滞、执行超时与接口
+错误仍会触发停止和归位。严格要求每帧都施加干预的实验设回 true。
 
 ### 服务器：Monitor / SAM3
 
@@ -131,6 +137,7 @@ Monitor/SAM3，因此这条路径不依赖 steering 配置里的 `task_queries` 
 | 同上 | `steering_config` | `./steering.yaml` |
 | 同上 | `model_path` | `/home/dais/workspace/Robo-Dopamine/pretrained_models/Robo-Dopamine-GRM-2.0-8B-Preview` |
 | 同上 | `goal_image` | `../examples/blank_goal.png`，有任务完成图时可替换 |
+| `configs/monitor_steering.yaml` / `configs/monitor_dual_branch.yaml` | `interval` | `0.1` 秒，每轮推理完成后的等待时间 |
 | `configs/steering.yaml` | `enabled` | `true` |
 | 同上 | `grounding.url` | `http://127.0.0.1:8878` |
 | `configs/sam3.yaml` | `host` / `port` | `127.0.0.1` / `8878` |
@@ -139,6 +146,12 @@ Monitor/SAM3，因此这条路径不依赖 steering 配置里的 `task_queries` 
 服务器当前 Monitor YAML 已使用 `18767`。配置在进程启动时读取；修改 YAML 后要
 重启对应服务，旧进程不会自动切换地址。不要再把 `robot_runtime_url` 配成无法直达
 的从臂内网 IP。
+
+Monitor 准备阶段优化只需同步服务器的 `Robo-Dopamine-delivery` 并在任务结束后重启
+Monitor，SAM3、Runtime、loop 和 SSH 配置不用调整。单、双分支都使用同轮图片与
+定位结果复用，并把轮间等待降到 0.1 秒；这不代表 10 Hz 推理。服务日志中的
+`latency=…s` 表示本轮处理时间，`online_pred.jsonl` 的 `timing.prepare_ms / grounding_ms / grm_ms`
+可用于拆分耗时；新评分周期仍需加上轮间等待。Loop 保持约每秒查询一次。
 
 ## 3. 按终端启动
 
@@ -312,6 +325,13 @@ ready 请求最多保留 15 秒，只有 loop 的轮询能续期。执行、停�
 | 本地请求出现代理错误 | 确认启动服务的终端设置 `NO_PROXY` / `no_proxy`；诊断 curl 使用 `--noproxy '*'` |
 | 网页目标输入一直不可用 | 确认 loop 使用 `--input-source web`，处于 ready，且已完成上一轮人工归位；不要同时运行两个 loop |
 | 有得分但“GRM 评分画面”没有图 | 更新并重启服务器 Monitor；旧服务没有 `/monitors/frames/...` 接口。再开始一轮任务 |
+| 首次得分后报 `missing or degraded attention steering` | 这是 loop 严格检查；查看 warning/error 中模式、`reason`、`applied` 和 `degraded`。允许 Monitor 的 baseline 降级时，将 **loop YAML** 的 `simple_loop.require_steering` 设为 false 后重启 loop |
+
+SAM3 当前在前两个候选的置信度差不超过 0.05 时标记 `ambiguous`，并不选定 bbox。
+Monitor 配置 `on_missing_bbox: baseline` 时，该帧继续无 attention 干预的评分；
+下一帧仍重新检测。单纯设置 `require_steering: false` 不会解决检测歧义，也不能将
+该帧当作“成功施加了 steering”的实验样本。UI 会显示歧义且不绘制选中框，详细
+候选及置信度保存在服务器会话的 `online_pred.jsonl`。
 
 ## 6. 修复 `Server` 没有 `list_tools` 的启动错误
 

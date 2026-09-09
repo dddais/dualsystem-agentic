@@ -22,4 +22,6 @@ simple_loop:
   first_result_timeout_s: 120.0
   result_timeout_s: 120.0
   max_execution_s: 300.0
-  require_steering: true
+  # Follow Monitor's on_missing_bbox: baseline fallback; warn on degraded frames.
+  # Set true only when every scored frame must apply attention steering.
+  require_steering: false
