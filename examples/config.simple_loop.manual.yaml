@@ -17,7 +17,7 @@ loop:
 
 simple_loop:
   input_source: web
-  instruction_template: "pick the {target} and put it on the plate"
+  instruction_template: "pick the {target} and put it into the box"
   default_target: null
   first_result_timeout_s: 120.0
   result_timeout_s: 120.0
