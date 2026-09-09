@@ -202,7 +202,8 @@ function drawCamera(camera, image, monitor, mode) {
       && (!size || (size[0] === image.width && size[1] === image.height));
     if (!valid) note = "bbox 与当前图像尺寸不匹配，未绘制";
     else {
-      note = `${selected.query || "目标"}${typeof selected.score === "number" ? " · SAM3 " + percent(selected.score) : ""}`
+      const source = detection.source === "sam3_tracker" ? "SAM3 跟踪存在分数" : "SAM3 检测分数";
+      note = `${selected.query || "目标"}${typeof selected.score === "number" ? " · " + source + " " + percent(selected.score) : ""}`
         + (steering.applied ? " · steering 已应用" : " · 本轮未应用 steering");
       if ($("show-bbox").checked) {
         const line = Math.max(2, image.width / 220), font = Math.max(13,image.width / 35);

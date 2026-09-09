@@ -11,22 +11,26 @@ robot-bridge 控制界面完成，再在 Runtime 人工页面确认。
 
 ## 1. 机器、环境与通信接口
 
-| 机器 | 运行内容 | 本文使用的仓库路径 |
-|---|---|---|
-| 从臂 | 已有 Robot Server、Scheduler；新增 Runtime、simple loop | `/home/xr/dais/dualsystem-agentic` |
-| GPU 服务器 | GRM Monitor、SAM3；沿用已有 VLA Policy Server | `/mnt/public1/dais/workspace/Robo-Dopamine-delivery` |
+
+| 机器      | 运行内容                                             | 本文使用的仓库路径                                            |
+| ------- | ------------------------------------------------ | ---------------------------------------------------- |
+| 从臂      | 已有 Robot Server、Scheduler；新增 Runtime、simple loop | `/home/xr/dais/dualsystem-agentic`                   |
+| GPU 服务器 | GRM Monitor、SAM3；沿用已有 VLA Policy Server          | `/mnt/public1/dais/workspace/Robo-Dopamine-delivery` |
+
 
 主从臂和原有 VLA 部署的通信已经接通，沿用现场启动方式。以下仅新增 manual
 框架的进程和转发，不需要重新启动一套 Robot Server 或机器人 SDK controller。
 Runtime 读取 **从臂 Robot Server 的 WebSocket 9946**，不是 SDK 的 50051。
 
-| 调用方向 | 调用方使用的地址 | 对应配置 |
-|---|---|---|
-| 从臂 loop / MCP → 本机 Runtime | `http://127.0.0.1:8767` | `DUAL_FRANKA_RUNTIME_URL` |
-| 从臂 Runtime → 本机 Robot Server 相机 | `ws://127.0.0.1:9946` | Runtime 的 `camera.robot_url` |
-| 从臂 Runtime → 服务器 Monitor | `http://127.0.0.1:18877` | Runtime 的 `monitor.url`；经 SSH `-L` |
-| 服务器 Monitor → 从臂 Runtime 图像 | `http://127.0.0.1:18767` | Monitor 的 `robot_runtime_url`；经 SSH `-R` |
-| 服务器 Monitor → 本机 SAM3 | `http://127.0.0.1:8878` | steering 的 `grounding.url` |
+
+| 调用方向                            | 调用方使用的地址                 | 对应配置                                     |
+| ------------------------------- | ------------------------ | ---------------------------------------- |
+| 从臂 loop / MCP → 本机 Runtime      | `http://127.0.0.1:8767`  | `DUAL_FRANKA_RUNTIME_URL`                |
+| 从臂 Runtime → 本机 Robot Server 相机 | `ws://127.0.0.1:9946`    | Runtime 的 `camera.robot_url`             |
+| 从臂 Runtime → 服务器 Monitor        | `http://127.0.0.1:18877` | Runtime 的 `monitor.url`；经 SSH `-L`       |
+| 服务器 Monitor → 从臂 Runtime 图像     | `http://127.0.0.1:18767` | Monitor 的 `robot_runtime_url`；经 SSH `-R` |
+| 服务器 Monitor → 本机 SAM3           | `http://127.0.0.1:8878`  | steering 的 `grounding.url`               |
+
 
 两条 HTTP 通路都需要：Runtime 启动和查询 Monitor，会话中的 Monitor 又要从
 Runtime 拉取三路图像。只转发 Monitor 端口不能完成这一轮交互。
@@ -65,6 +69,8 @@ WebSocket、NumPy、OpenCV、msgpack；沿用 robot-bridge 自己的 codec，无
 
 ## 2. 配置检查
 
+
+
 ### 从臂：Runtime
 
 修改 [manual.runtime.yaml](../robot_runtime/robot_runtime/configs/manual.runtime.yaml)，
@@ -86,8 +92,8 @@ monitor:
   timeout: 30.0
 ```
 
-**本次 SSH 部署使用 `http://127.0.0.1:18877`；若从臂仍沿用旧模板的 `8877`，需要
-改为 `18877`。** `camera.robot_url` 指向实际 Robot Server；若它不在 Runtime
+**本次 SSH 部署使用** `http://127.0.0.1:18877`**；若从臂仍沿用旧模板的** `8877`**，需要
+改为** `18877`**。** `camera.robot_url` 指向实际 Robot Server；若它不在 Runtime
 同一主机/网络空间，用已经打通的对应地址替换。Runtime 不通过 Scheduler 的 UI
 控制端口取图。
 
@@ -129,27 +135,31 @@ Manual 默认允许 Monitor 的 baseline 降级，避免首帧 SAM3 候选歧义
 
 在 `/mnt/public1/dais/workspace/Robo-Dopamine-delivery` 核对：
 
-| 文件 | 字段 | 本次部署值 |
-|---|---|---|
-| `configs/monitor_steering.yaml` | `port` | `8877` |
-| 同上 | `backend` / `inference_engine` | `grm` / `hf` |
-| 同上 | `robot_runtime_url` | `http://127.0.0.1:18767` |
-| 同上 | `steering_config` | `./steering.yaml` |
-| 同上 | `model_path` | `/home/dais/workspace/Robo-Dopamine/pretrained_models/Robo-Dopamine-GRM-2.0-8B-Preview` |
-| 同上 | `goal_image` | `../examples/blank_goal.png`，有任务完成图时可替换 |
-| `configs/monitor_steering.yaml` / `configs/monitor_dual_branch.yaml` | `interval` | `0.1` 秒，每轮推理完成后的等待时间 |
-| `configs/steering.yaml` | `enabled` | `true` |
-| 同上 | `grounding.url` | `http://127.0.0.1:8878` |
-| `configs/sam3.yaml` | `host` / `port` | `127.0.0.1` / `8878` |
-| 同上 | `model_path` | `/home/dais/workspace/model/sam3` |
+
+| 文件                                                                   | 字段                             | 本次部署值                                                                                   |
+| -------------------------------------------------------------------- | ------------------------------ | --------------------------------------------------------------------------------------- |
+| `configs/monitor_steering.yaml`                                      | `port`                         | `8877`                                                                                  |
+| 同上                                                                   | `backend` / `inference_engine` | `grm` / `hf`                                                                            |
+| 同上                                                                   | `robot_runtime_url`            | `http://127.0.0.1:18767`                                                                |
+| 同上                                                                   | `steering_config`              | `./steering.yaml`                                                                       |
+| 同上                                                                   | `model_path`                   | `/home/dais/workspace/Robo-Dopamine/pretrained_models/Robo-Dopamine-GRM-2.0-8B-Preview` |
+| 同上                                                                   | `goal_image`                   | `../examples/blank_goal.png`，有任务完成图时可替换                                                 |
+| `configs/monitor_steering.yaml` / `configs/monitor_dual_branch.yaml` | `interval`                     | `0.1` 秒，每轮推理完成后的等待时间                                                                    |
+| `configs/steering.yaml`                                              | `enabled`                      | `true`                                                                                  |
+| 同上                                                                   | `grounding.url`                | `http://127.0.0.1:8878`                                                                 |
+| `configs/sam3.yaml`                                                  | `host` / `port`                | `127.0.0.1` / `8878`                                                                    |
+| 同上                                                                   | `model_path`                   | `/home/dais/workspace/model/sam3`                                                       |
+
 
 服务器当前 Monitor YAML 已使用 `18767`。配置在进程启动时读取；修改 YAML 后要
 重启对应服务，旧进程不会自动切换地址。不要再把 `robot_runtime_url` 配成无法直达
 的从臂内网 IP。
 
-Monitor 准备阶段优化只需同步服务器的 `Robo-Dopamine-delivery` 并在任务结束后重启
-Monitor，SAM3、Runtime、loop 和 SSH 配置不用调整。单、双分支都使用同轮图片与
-定位结果复用，并把轮间等待降到 0.1 秒；这不代表 10 Hz 推理。服务日志中的
+本次 bbox 后处理与 GRM 批处理优化需要同步服务器的 `Robo-Dopamine-delivery`，
+在任务结束后用原命令重启 **SAM3 和 Monitor**。Runtime、loop 和 SSH 配置不用调整。
+单、双分支配置均新增 `hf_batch_size: 2`，每个独立模型一次生成 forward/incremental。
+需要串行对比时，给 Monitor 启动命令加 `--hf-batch-size 1`，两个分支同时切换。
+轮间等待仍是 0.1 秒，这不代表 10 Hz 推理。服务日志中的
 `latency=…s` 表示本轮处理时间，`online_pred.jsonl` 的 `timing.prepare_ms / grounding_ms / grm_ms`
 可用于拆分耗时；新评分周期仍需加上轮间等待。Loop 保持约每秒查询一次。
 
@@ -187,6 +197,8 @@ robot-runtime \
   --host 0.0.0.0 --port 8767
 ```
 
+
+
 ### 服务器终端 C：SAM3
 
 ```bash
@@ -196,6 +208,8 @@ CUDA_VISIBLE_DEVICES=3 python -m sam3_runtime.service \
   --config configs/sam3.yaml
 ```
 
+
+
 ### 服务器终端 D：GRM Monitor
 
 ```bash
@@ -203,8 +217,15 @@ conda activate robo-dopamine
 cd /mnt/public1/dais/workspace/Robo-Dopamine-delivery
 export NO_PROXY=127.0.0.1,localhost
 export no_proxy=$NO_PROXY
+##attention steering
 CUDA_VISIBLE_DEVICES=0 python -m monitor_runtime.service \
   --config configs/monitor_steering.yaml
+##双分支
+CUDA_VISIBLE_DEVICES=0,1 python -m monitor_runtime.service \
+  --config configs/monitor_dual_branch.yaml
+## 原版本
+CUDA_VISIBLE_DEVICES=0 python -m monitor_runtime.service \
+  --config configs/monitor.yaml
 ```
 
 GPU 0 和 3 是示例，按服务器空闲 GPU 修改。YAML 的 `device: cuda:0` 对应各进程
@@ -267,12 +288,12 @@ Web 输入地址优先使用该 MCP namespace 配置中的 `DUAL_FRANKA_RUNTIME_
 或可直达的从臂地址。
 
 1. 摆好场景、保持 VLA 暂停。页面显示 `ready` 后，在“目标物体”输入 `carrot`，
-   核对预览的完整 instruction，再点击“提交目标”。
+  核对预览的完整 instruction，再点击“提交目标”。
 2. Runtime 启动 Monitor 会话并等初始参考帧就绪；人工页随后显示完整 instruction。
 3. 在原 VLA UI 选择对应指令并开始执行，完成后在人工页点击“已开始”。Runtime
-   此时激活 Monitor 评分，loop 开始轮询进度，页面显示最新得分与图像。
+  此时激活 Monitor 评分，loop 开始轮询进度，页面显示最新得分与图像。
 4. Monitor 成功/失败，或 loop 遇到执行异常/超时后，人工页提示停止。先在原 UI
-   停止 VLA 和当前动作，再点击“已停止”。
+  停止 VLA 和当前动作，再点击“已停止”。
 5. 在原系统让机械臂归位，完成后点击“已归位”。Loop 返回 `[ready]`，才进入下一轮。
 
 人工页的按钮只确认已经完成的操作，本身不会向 robot-bridge 发动作命令。manual
@@ -289,15 +310,14 @@ SAM3 和 SSH 隧道终端。
 ### 画面、bbox 和得分的对应关系
 
 - **实时画面**：约每秒从 Runtime 获取一组相机快照；三路 JPEG 来自同一次采集请求。
-  同时显示最近一次 Monitor 得分。这里不叠加较早评分帧的 bbox。
-- **GRM 评分画面**：显示该次推理的 `after_cam_high / after_cam_left_wrist /
-  after_cam_right_wrist` 三张原图，与 bbox、评分轮次和得分一起更新。若 Monitor
-  配置了腕部去畸变，这里展示的也是去畸变后、送入 GRM 预处理器的原图。
+同时显示最近一次 Monitor 得分。这里不叠加较早评分帧的 bbox。
+- **GRM 评分画面**：显示该次推理的 `after_cam_high / after_cam_left_wrist / after_cam_right_wrist` 三张原图，与 bbox、评分轮次和得分一起更新。若 Monitor
+配置了腕部去畸变，这里展示的也是去畸变后、送入 GRM 预处理器的原图。
 - 勾选 **SAM3 bbox** 叠加该轮实际选中的检测框，模式下拉框选择 forward、incremental
-  或 backward 对应的检测结果。默认配置仅检测 `after_cam_high`，因此腕部没有框；
-  页面会区分“未检测此视角”“没有目标”“候选歧义”和检测降级，不补造 bbox。
+或 backward 对应的检测结果。默认配置仅检测 `after_cam_high`，因此腕部没有框；
+页面会区分“未检测此视角”“没有目标”“候选歧义”和检测降级，不补造 bbox。
 - Monitor 区域显示融合进度、各模式原始 score/累计进度、推理轮次、结果年龄和进度
-  趋势。启用双分支时，额外显示 Baseline 融合进度、分支差值和阈值。
+趋势。启用双分支时，额外显示 Baseline 融合进度、分支差值和阈值。
 
 GRM 并非吃“画了框的图片”：它接收原图，bbox 用于 attention 干预。页面仅在
 canvas 上绘框，不改模型输入、不额外调用 SAM3 或 GRM。GRM 的完整输入还含参考图、
@@ -315,17 +335,19 @@ ready 请求最多保留 15 秒，只有 loop 的轮询能续期。执行、停�
 
 ## 5. 常见通信问题
 
-| 现象 | 检查方式 |
-|---|---|
-| 从臂 `18877/health` 失败 | 先在服务器确认 `8877/health`；再检查 SSH `-L` 和服务器模型加载日志 |
-| 服务器 `18767/health` 失败 | 先在从臂确认 `8767/health`；再检查 SSH `-R` |
-| health 正常但 metadata 返回 503 | 查看 Runtime 日志；确认 Robot Server 的 9946 可达，三路图像正常，codec 可导入 |
-| Monitor 仍请求旧内网 IP | 修改配置后重启 Monitor，并确认启动时使用的 `--config` 路径 |
-| SSH 提示端口已占用/转发失败 | 检查是否已有同一条隧道；使用现有隧道或停止自己的旧隧道后重连 |
-| 本地请求出现代理错误 | 确认启动服务的终端设置 `NO_PROXY` / `no_proxy`；诊断 curl 使用 `--noproxy '*'` |
-| 网页目标输入一直不可用 | 确认 loop 使用 `--input-source web`，处于 ready，且已完成上一轮人工归位；不要同时运行两个 loop |
-| 有得分但“GRM 评分画面”没有图 | 更新并重启服务器 Monitor；旧服务没有 `/monitors/frames/...` 接口。再开始一轮任务 |
+
+| 现象                                              | 检查方式                                                                                                                                                           |
+| ----------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 从臂 `18877/health` 失败                            | 先在服务器确认 `8877/health`；再检查 SSH `-L` 和服务器模型加载日志                                                                                                                  |
+| 服务器 `18767/health` 失败                           | 先在从臂确认 `8767/health`；再检查 SSH `-R`                                                                                                                              |
+| health 正常但 metadata 返回 503                      | 查看 Runtime 日志；确认 Robot Server 的 9946 可达，三路图像正常，codec 可导入                                                                                                       |
+| Monitor 仍请求旧内网 IP                               | 修改配置后重启 Monitor，并确认启动时使用的 `--config` 路径                                                                                                                        |
+| SSH 提示端口已占用/转发失败                                | 检查是否已有同一条隧道；使用现有隧道或停止自己的旧隧道后重连                                                                                                                                 |
+| 本地请求出现代理错误                                      | 确认启动服务的终端设置 `NO_PROXY` / `no_proxy`；诊断 curl 使用 `--noproxy '*'`                                                                                                 |
+| 网页目标输入一直不可用                                     | 确认 loop 使用 `--input-source web`，处于 ready，且已完成上一轮人工归位；不要同时运行两个 loop                                                                                             |
+| 有得分但“GRM 评分画面”没有图                               | 更新并重启服务器 Monitor；旧服务没有 `/monitors/frames/...` 接口。再开始一轮任务                                                                                                       |
 | 首次得分后报 `missing or degraded attention steering` | 这是 loop 严格检查；查看 warning/error 中模式、`reason`、`applied` 和 `degraded`。允许 Monitor 的 baseline 降级时，将 **loop YAML** 的 `simple_loop.require_steering` 设为 false 后重启 loop |
+
 
 SAM3 当前在前两个候选的置信度差不超过 0.05 时标记 `ambiguous`，并不选定 bbox。
 Monitor 配置 `on_missing_bbox: baseline` 时，该帧继续无 attention 干预的评分；
@@ -404,3 +426,37 @@ PY
 `tests/validate_manual_dashboard.py`，用模拟相机/GRM 和真实 Runtime、Monitor HTTP、
 MCP、loop 验证提交目标、bbox 显示、人工开始/停止/归位，以及返回 ready。测试需要
 Playwright/Chromium，生产运行页面无需安装浏览器测试依赖。
+
+## 可选：SAM3 加速与连续跟踪
+
+完整参数、耗时测量和回退方法见服务器仓库
+[sam3_tracking.md](../../Robo-Dopamine-delivery/docs/sam3_tracking.md)。无需修改 robot-bridge 或 SSH 转发。
+
+仅加速逐轮 SAM3 检测，可将服务器 SAM3 启动配置改为 `configs/sam3_fast.yaml`；它使用 BF16，bbox/分数可能有小幅数值差异。`configs/sam3.yaml` 保留 FP32。
+
+启用“先检测，再持续跟踪”时，结束当前任务后重启相应服务。SAM3 终端：
+
+```bash
+cd /home/dais/workspace/Robo-Dopamine-delivery
+conda activate rewardbench-sam3
+# 3 是物理 GPU 示例；先用 nvidia-smi 选择实际可用、负载较低的 GPU。
+CUDA_VISIBLE_DEVICES=3 python -m sam3_runtime.service --config configs/sam3_tracker.yaml
+```
+
+Monitor 终端（双分支）：
+
+```bash
+cd /home/dais/workspace/Robo-Dopamine-delivery
+conda activate robo-dopamine
+CUDA_VISIBLE_DEVICES=0,1 python -m monitor_runtime.service \
+  --config configs/monitor_dual_branch.yaml \
+  --tracking-config configs/tracking.yaml
+```
+
+单分支改用 `configs/monitor_steering.yaml`。从臂 Runtime 和 Loop 的命令不变；若希望获得更连续的图像，将 `robot_runtime/robot_runtime/configs/manual.runtime.yaml` 的 `camera.cache_s` 从 `0.5` 改成 `0.1` 后重启 Runtime。实际刷新率还受三视角编码、SSH 带宽、取图和跟踪耗时限制。
+
+后台 tracker 独立采图，只保留最新完成的一组“图像＋bbox”，GRM 不排队处理中间帧。
+“GRM 评分画面”仍与该轮分数严格对应；持续评分时不会因为堆积旧帧而越来越滞后，但延时会波动。网络/推理停顿或任务结束后，旧画面的年龄仍会增加。
+初始目标歧义、丢失和断帧会触发重新检测，不会直接沿用旧框。
+
+回退时去掉 Monitor 的 `--tracking-config`，SAM3 改用 `sam3.yaml` 或 `sam3_fast.yaml`。
