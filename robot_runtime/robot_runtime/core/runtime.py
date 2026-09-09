@@ -6,6 +6,7 @@ import threading
 import time
 import math
 from dataclasses import replace
+from copy import deepcopy
 from typing import Protocol
 
 from robot_runtime.core.types import (
@@ -399,6 +400,19 @@ class RobotRuntime:
                 return None
             execution = self._executions.get(self._latest_execution_id)
             return execution.to_dict() if execution else None
+
+    def manual_snapshot(self) -> JsonDict:
+        """Read cached state only; opening a dashboard must not poll the provider."""
+        with self._lock:
+            execution = self._executions.get(self._latest_execution_id)
+            monitor = self._monitors.get(execution.monitor_id) if execution else None
+            return deepcopy({
+                "execution": execution.to_dict() if execution else None,
+                "monitor": monitor.to_dict() if monitor else None,
+                "active_execution_id": self._active_execution_id,
+                "resetting": self._resetting,
+                "estop_latched": self._estop_latched,
+            })
 
     def _resolve_monitor(self, payload: JsonDict) -> MonitorState:
         requested_monitor_id = _optional_text(payload.get("monitor_id"))

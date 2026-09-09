@@ -23,12 +23,15 @@ from robot_runtime.adapters.dual_franka.monitor_provider import (
 )
 from robot_runtime.adapters.dual_franka.robot_driver import PlaceholderDualFrankaRobotDriver
 from robot_runtime.adapters.manual.robot_driver import ManualRobotDriver
+from robot_runtime.adapters.manual.target_input import ManualTargetInput
 from robot_runtime.adapters.robot_bridge.camera_provider import RobotBridgeCameraProvider
 from robot_runtime.adapters.robot_bridge.robot_driver import RobotBridgeRobotDriver
 from robot_runtime.core.runtime import RobotRuntime
 
 
 def create_app(runtime: RobotRuntime) -> FastAPI:
+    target_input = ManualTargetInput()
+
     @asynccontextmanager
     async def lifespan(app):
         yield
@@ -104,7 +107,69 @@ def create_app(runtime: RobotRuntime) -> FastAPI:
     def manual_status():
         if not isinstance(runtime.robot_driver, ManualRobotDriver):
             return _fail("manual adapter is not enabled", status=404)
-        return _ok(runtime.robot_driver.status())
+        return _ok({**runtime.robot_driver.status(), **runtime.manual_snapshot(),
+                    "input": target_input.status()})
+
+    @app.get("/manual/app.js")
+    def manual_script():
+        if not isinstance(runtime.robot_driver, ManualRobotDriver):
+            return _fail("manual adapter is not enabled", status=404)
+        script = Path(__file__).resolve().parents[1] / "adapters/manual/operator.js"
+        return Response(script.read_text(encoding="utf-8"), media_type="text/javascript",
+                        headers={"Cache-Control": "no-cache"})
+
+    def check_input_ready():
+        if not isinstance(runtime.robot_driver, ManualRobotDriver):
+            raise ValueError("manual adapter is not enabled")
+        state = runtime.manual_snapshot()
+        if (state["active_execution_id"] or state["resetting"] or state["estop_latched"]
+                or runtime.robot_driver.status()["pending"]):
+            raise ValueError("finish stopping and resetting before entering another target")
+
+    @app.post("/manual/input/open")
+    def manual_input_open(body: dict[str, Any]):
+        try:
+            check_input_ready()
+            return _ok(target_input.open(body.get("request_id"), body.get("instruction_template"),
+                                         body.get("last_target", "")))
+        except ValueError as exc:
+            return _fail(str(exc), status=409)
+
+    @app.get("/manual/input/{request_id}")
+    def manual_input_poll(request_id: str):
+        try:
+            check_input_ready()
+            return _ok(target_input.poll(request_id))
+        except ValueError as exc:
+            return _fail(str(exc), status=409)
+
+    @app.delete("/manual/input/{request_id}")
+    def manual_input_close(request_id: str):
+        target_input.close(request_id)
+        return _ok({"closed": True})
+
+    @app.post("/manual/target")
+    def manual_target(body: dict[str, Any]):
+        try:
+            check_input_ready()
+            return _ok(target_input.submit(body.get("request_id"), body.get("target")))
+        except ValueError as exc:
+            return _fail(str(exc), status=409)
+
+    @app.get("/manual/monitor/frames/{frame_set_id}/{camera}.png")
+    def manual_monitor_frame(frame_set_id: str, camera: str):
+        if not isinstance(runtime.robot_driver, ManualRobotDriver):
+            return _fail("manual adapter is not enabled", status=404)
+        fetch = getattr(runtime.monitor_provider, "frame_image", None)
+        if fetch is None:
+            return _fail("monitor does not provide inference images", status=404)
+        try:
+            return Response(fetch(frame_set_id, camera), media_type="image/png",
+                            headers={"Cache-Control": "private, max-age=60"})
+        except ValueError as exc:
+            return _fail(str(exc), status=400)
+        except Exception as exc:
+            return _fail(str(exc), status=503)
 
     @app.post("/manual/ack")
     def manual_ack(body: dict[str, Any]):
@@ -169,6 +234,11 @@ def create_app(runtime: RobotRuntime) -> FastAPI:
                     "GET  /manual",
                     "GET  /manual/status",
                     "POST /manual/ack",
+                    "POST /manual/input/open",
+                    "GET  /manual/input/{request_id}",
+                    "DELETE /manual/input/{request_id}",
+                    "POST /manual/target",
+                    "GET  /manual/monitor/frames/{frame_set_id}/{camera}.png",
                     "POST /executions",
                     "POST /monitors/status",
                     "POST /control/stop",

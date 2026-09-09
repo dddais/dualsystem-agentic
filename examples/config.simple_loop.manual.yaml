@@ -16,6 +16,7 @@ loop:
   monitor_poll_interval_s: 1.0
 
 simple_loop:
+  input_source: web
   instruction_template: "pick the {target} and put it on the plate"
   default_target: null
   first_result_timeout_s: 120.0

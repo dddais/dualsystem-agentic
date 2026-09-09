@@ -41,12 +41,12 @@ robot-runtime --config robot_runtime/robot_runtime/configs/manual.runtime.yaml \
 
 ```bash
 export DUAL_FRANKA_RUNTIME_URL=http://127.0.0.1:8767
-PYTHONPATH=src python examples/run_simple_robot.py --config examples/config.simple_loop.manual.yaml
+PYTHONPATH=src python examples/run_simple_robot.py --config examples/config.simple_loop.manual.yaml --input-source web
 ```
 
 每轮操作：
 
-1. 摆好场景、保持机器人暂停，在 loop 终端输入目标物体。
+1. 摆好场景、保持机器人暂停，在 `/manual` 页面 ready 阶段输入目标物体并提交。
 2. Runtime 等 GRM 起始参考帧就绪，人工页显示本轮完整 instruction。
 3. 在原 UI 选择对应指令并启动 VLA；在人工页点击“已开始”。此时激活 GRM 评分。
 4. Monitor 到达终态或 loop 遇到异常后，人工页提示停止。人工停止动作，点击“已停止”。
@@ -54,6 +54,10 @@ PYTHONPATH=src python examples/run_simple_robot.py --config examples/config.simp
 
 人工页只记录人工操作，没有向 robot-bridge 发送控制指令。不要在起始帧准备好前
 开始动作，也不要在上一轮归位完成前提前确认。重复提交旧按钮不会确认下一操作。
+
+页面可切换实时三视角和与得分对应的 GRM 三视角，后者叠加实际 SAM3 bbox；同时
+显示融合进度及各模式分数。使用方式、双向 SSH 转发与更新步骤见
+[manual_start.md](manual_start.md)。需要键盘输入时使用 `--input-source terminal`。
 
 `robot.operator_timeout_s` 默认 300 秒。manual loop 配置将 MCP HTTP 超时设为
 660 秒，容纳参考帧等待、人工操作和异常清理；实际运行/首评分超时从 execute

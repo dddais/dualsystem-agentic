@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import math
+import re
 import time
 import urllib.error
 import urllib.request
@@ -142,6 +143,21 @@ class RemoteHTTPMonitorProvider:
 
     def health(self) -> JsonDict:
         return {"provider": "remote_http", "url": self.url}
+
+    def frame_image(self, frame_set_id: str, camera: str) -> bytes:
+        if not re.fullmatch(r"[a-f0-9]{32}", frame_set_id) or camera not in {
+            "cam_high", "cam_left_wrist", "cam_right_wrist"
+        }:
+            raise ValueError("invalid monitor frame or camera")
+        path = f"/monitors/frames/{frame_set_id}/{camera}.png"
+        try:
+            with urllib.request.urlopen(self.url + path, timeout=min(self.timeout, 5.0)) as response:
+                data = response.read(16 * 1024 * 1024 + 1)
+            if not data.startswith(b"\x89PNG\r\n\x1a\n") or len(data) > 16 * 1024 * 1024:
+                raise ValueError("monitor frame is not a valid bounded PNG response")
+            return data
+        except (OSError, ValueError) as exc:
+            raise RuntimeError(f"monitor frame unavailable: {exc}") from exc
 
     def _request(self, method: str, path: str, payload: JsonDict | None = None) -> JsonDict:
         body = None

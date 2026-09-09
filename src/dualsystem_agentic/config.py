@@ -110,6 +110,7 @@ class SimpleLoopConfig:
     result_timeout_s: float = 120.0
     max_execution_s: float = 300.0
     require_steering: bool = True
+    input_source: str = "terminal"
 
 
 @dataclass

@@ -24,7 +24,7 @@ dependencies = [
 
 [project.optional-dependencies]
 mcp = [
-    "mcp",
+    "mcp>=1.28.1,<2",
     "httpx",
 ]
 x2robot-bridge = [

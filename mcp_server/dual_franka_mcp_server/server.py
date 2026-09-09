@@ -35,6 +35,7 @@ import json
 import logging
 import os
 import sys
+from importlib.metadata import PackageNotFoundError, version
 from typing import Any
 
 import anyio
@@ -64,6 +65,21 @@ ENABLE_RESET = (os.environ.get("DUAL_FRANKA_ENABLE_RESET") or "").lower() in {"1
 _LAST_EXECUTION: dict[str, Any] = {}
 
 app = Server("dual_franka_mcp_server")
+
+# MCP 2.x removed these low-level decorators. Fail before registration with
+# the interpreter and repair command, instead of an opaque AttributeError.
+if not all(callable(getattr(app, name, None)) for name in ("list_tools", "call_tool")):
+    try:
+        sdk_version = version("mcp")
+    except PackageNotFoundError:
+        sdk_version = "unknown"
+    raise RuntimeError(
+        f"Incompatible MCP SDK {sdk_version} (Python: {sys.executable}): "
+        "this server requires the MCP 1.x list_tools/call_tool decorators. "
+        "Activate the loop environment and run "
+        "python -m pip install 'mcp>=1.28.1,<2' from that environment; "
+        "see docs/manual_start.md."
+    )
 
 
 @app.list_tools()

@@ -28,4 +28,4 @@ include = ["robot_runtime*"]
 
 [tool.setuptools.package-data]
 "robot_runtime.configs" = ["*.yaml"]
-"robot_runtime.adapters.manual" = ["*.html"]
+"robot_runtime.adapters.manual" = ["*.html", "*.js"]

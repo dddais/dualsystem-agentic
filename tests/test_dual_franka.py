@@ -5,7 +5,10 @@ from __future__ import annotations
 import asyncio
 import importlib.util
 import json
+import os
 from pathlib import Path
+import subprocess
+import sys
 
 import pytest
 
@@ -30,6 +33,46 @@ def _load_dual_franka_server_module():
         "mcp_server/dual_franka_mcp_server/server.py",
         "dual_franka_mcp_server_for_test",
     )
+
+
+def test_dual_franka_incompatible_sdk_has_repair_message(monkeypatch):
+    lowlevel = pytest.importorskip("mcp.server.lowlevel")
+    monkeypatch.setattr(lowlevel, "Server", lambda name: object())
+
+    with pytest.raises(RuntimeError, match="Incompatible MCP SDK") as error:
+        _load_dual_franka_server_module()
+
+    assert "mcp>=1.28.1,<2" in str(error.value)
+    assert sys.executable in str(error.value)
+
+
+def test_manual_loop_initializes_real_mcp_subprocess():
+    """Exercise the reported entry point and actual SDK initialize/list_tools.
+
+    Quitting at ready never invokes a robot tool. An unreachable Runtime URL
+    keeps this independent of any running hardware or Monitor service.
+    """
+    pytest.importorskip("mcp")
+    root = Path(__file__).resolve().parents[1]
+    env = {
+        **os.environ,
+        "PATH": os.pathsep.join([str(Path(sys.executable).parent), os.environ.get("PATH", "")]),
+        "PYTHONPATH": str(root / "src"),
+        "DUAL_FRANKA_RUNTIME_URL": "http://127.0.0.1:1",
+    }
+    result = subprocess.run(
+        [sys.executable, "examples/run_simple_robot.py", "--config", "examples/config.simple_loop.manual.yaml",
+         "--input-source", "terminal"],
+        cwd=root,
+        env=env,
+        input="q\n",
+        text=True,
+        capture_output=True,
+        timeout=20,
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "[ready]" in result.stdout
 
 
 def test_dual_franka_monitor_status_normalization():

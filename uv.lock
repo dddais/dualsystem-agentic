@@ -465,7 +465,7 @@ x2robot-bridge = [
 requires-dist = [
     { name = "fastapi", marker = "extra == 'x2robot-bridge'" },
     { name = "httpx", marker = "extra == 'mcp'" },
-    { name = "mcp", marker = "extra == 'mcp'" },
+    { name = "mcp", marker = "extra == 'mcp'", specifier = ">=1.28.1,<2" },
     { name = "pillow" },
     { name = "pytest", marker = "extra == 'dev'" },
     { name = "pyyaml" },

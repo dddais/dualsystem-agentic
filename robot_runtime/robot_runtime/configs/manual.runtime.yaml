@@ -15,7 +15,8 @@ camera:
 
 monitor:
   provider: remote_http
-  url: http://127.0.0.1:8877  # Replace with the GRM server address.
+  # url: http://123.183.193.192:8877  # Replace with the GRM server address.
+  url: http://127.0.0.1:18877  # GRM Monitor through the SSH local forward.
   timeout: 30.0
 
 safety:

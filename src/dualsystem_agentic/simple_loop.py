@@ -1,4 +1,4 @@
-"""Keyboard-driven execute/monitor/stop/reset loop, without a planner."""
+"""Terminal- or web-driven execute/monitor/stop/reset loop, without a planner."""
 
 from __future__ import annotations
 
@@ -210,6 +210,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--poll-interval", type=float, default=None, help="Seconds between monitor calls")
     parser.add_argument("--stop-tool", default="stop_task")
     parser.add_argument("--recover-tool", default="reset_task")
+    parser.add_argument("--input-source", choices=("terminal", "web"), default=None)
+    parser.add_argument("--runtime-url", default=None, help="Robot Runtime URL for web target input")
     args = parser.parse_args(argv)
 
     # Build only the existing MCP client. No VLM, executor, or camera loader.
@@ -218,6 +220,21 @@ def main(argv: list[str] | None = None) -> int:
     config = load_config(args.config)
     client = build_mcp_client(config.mcp)
     try:
+        read_input = input
+        input_source = args.input_source or config.simple_loop.input_source
+        if input_source == "web":
+            import os
+            from dualsystem_agentic.web_input import WebTargetInput
+
+            runtime_url = next((server.get("env", {}).get("DUAL_FRANKA_RUNTIME_URL")
+                for server in config.mcp.servers if server.get("namespace") == args.namespace), None)
+            read_input = WebTargetInput(
+                args.runtime_url or runtime_url or os.environ.get("DUAL_FRANKA_RUNTIME_URL") or "http://127.0.0.1:8767",
+                config.simple_loop.instruction_template,
+                last_target=config.simple_loop.default_target or "",
+            )
+        elif input_source != "terminal":
+            raise ValueError("simple_loop.input_source must be terminal or web")
         loop = SimpleRobotLoop(
             client,
             namespace=args.namespace,
@@ -228,6 +245,7 @@ def main(argv: list[str] | None = None) -> int:
             stop_tool=args.stop_tool,
             recover_tool=args.recover_tool,
             settings=config.simple_loop,
+            read_input=read_input,
         )
         loop.serve_forever()
     except (ValueError, RuntimeError) as exc:
