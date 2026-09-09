@@ -1,0 +1,24 @@
+# Operator waits can last 300 seconds. Allow startup plus cancellation cleanup.
+mcp:
+  provider: sdk
+  servers:
+    - namespace: dual_franka
+      transport: stdio
+      command: python
+      args: ["mcp_server/dual_franka_mcp_server/server.py"]
+      env:
+        DUAL_FRANKA_RUNTIME_URL: ${DUAL_FRANKA_RUNTIME_URL}
+        DUAL_FRANKA_ENABLE_RESET: "true"
+        DUAL_FRANKA_UNKNOWN_STATUS: failed
+        DUAL_FRANKA_TIMEOUT_S: 660.0
+
+loop:
+  monitor_poll_interval_s: 1.0
+
+simple_loop:
+  instruction_template: "pick the {target} and put it on the plate"
+  default_target: null
+  first_result_timeout_s: 120.0
+  result_timeout_s: 120.0
+  max_execution_s: 300.0
+  require_steering: true

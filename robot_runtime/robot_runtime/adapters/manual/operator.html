@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="zh-CN">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>机器人人工操作</title>
+<style>
+body{font-family:system-ui,sans-serif;max-width:700px;margin:64px auto;padding:0 24px;color:#172337;background:#f6f8fb}
+main{padding:32px;background:white;border:1px solid #dae0e8;border-radius:16px}
+h1{font-size:25px}#instruction{font-size:21px;white-space:pre-wrap;overflow-wrap:anywhere}
+button{font:inherit;border:0;border-radius:8px;padding:14px 22px;background:#175bbb;color:white;cursor:pointer}
+button:disabled{background:#8491a4;cursor:default}#error{color:#b12424}small{color:#536176}
+</style>
+<main>
+<h1 id="title">等待任务</h1>
+<p id="instruction"></p>
+<p id="help">在 loop 终端输入目标物体。参考帧准备好后，这里会提示开始。</p>
+<button id="ack" hidden>完成</button>
+<p id="error" role="alert"></p>
+<small>本页记录人工操作。请在机器人原有控制界面完成对应动作后，再点击按钮。</small>
+</main>
+<script>
+const labels = {
+  execute: ['开始任务', '参考帧已就绪。请选择显示的任务指令并启动 VLA，然后点击“已开始”。', '已开始'],
+  stop: ['停止任务', '请停止 VLA 和机械臂当前动作，然后点击“已停止”。', '已停止'],
+  reset: ['恢复初始状态', '请让机械臂归位。归位完成后点击“已归位”，loop 才会接收下一任务。', '已归位']
+};
+let pending = null, sending = false;
+const button = document.getElementById('ack');
+async function refresh() {
+  try {
+    const response = await fetch('/manual/status', {cache:'no-store'});
+    const payload = await response.json();
+    if (!response.ok || !payload.success) throw Error(payload.message || '无法读取人工操作状态');
+    pending = payload.data.pending;
+    const label = pending && labels[pending.action];
+    document.getElementById('title').textContent = label ? label[0] : '等待任务或评分';
+    document.getElementById('instruction').textContent = pending ? pending.instruction : '';
+    document.getElementById('help').textContent = label ? label[1] : '请查看 loop 终端；下一次需要人工操作时会在这里显示。';
+    button.hidden = !label;
+    button.disabled = sending;
+    button.textContent = label ? label[2] : '完成';
+    document.getElementById('error').textContent = '';
+  } catch (error) {
+    pending = null; button.disabled = true;
+    document.getElementById('error').textContent = error.message;
+  }
+}
+button.onclick = async () => {
+  if (!pending || sending) return;
+  sending = true; button.disabled = true;
+  const requestId = pending.request_id;
+  try {
+    const response = await fetch('/manual/ack', {method:'POST', headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({request_id:requestId})});
+    const payload = await response.json();
+    if (!response.ok || !payload.success) throw Error(payload.message || '提交失败');
+  } catch (error) { document.getElementById('error').textContent = error.message; }
+  finally { sending = false; await refresh(); }
+};
+(async function poll(){await refresh(); setTimeout(poll, 500);})();
+</script>
+</html>

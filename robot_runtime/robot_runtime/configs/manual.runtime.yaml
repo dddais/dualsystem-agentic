@@ -1,0 +1,23 @@
+# Version 1: operator controls VLA in the original UI; Runtime reads cameras.
+robot:
+  type: x1pro
+  driver: manual
+  operator_timeout_s: 300.0
+
+camera:
+  provider: robot_bridge
+  robot_url: ws://127.0.0.1:9946
+  timeout_s: 5.0
+  cache_s: 0.5
+  snapshot_ttl_s: 30.0
+  max_obs_lag_s: 3.0
+  quality: 90
+
+monitor:
+  provider: remote_http
+  url: http://127.0.0.1:8877  # Replace with the GRM server address.
+  timeout: 30.0
+
+safety:
+  monitor_ready_timeout_s: 30.0
+  max_execution_s: 300.0  # Starts after the operator acknowledges VLA startup.

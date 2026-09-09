@@ -140,7 +140,7 @@ class MonitorState:
 @dataclass
 class ObservationFrame:
     images: dict[str, str]
-    timestamp: float
+    timestamp: float | None
     frame_id: str
     missing: list[str] = field(default_factory=list)
     metadata: JsonDict = field(default_factory=dict)
@@ -176,7 +176,7 @@ class ObservationFrame:
 class ObservationImage:
     camera: str
     data: bytes
-    timestamp: float
+    timestamp: float | None
     frame_id: str
     mime_type: str = "image/jpeg"
     metadata: JsonDict = field(default_factory=dict)

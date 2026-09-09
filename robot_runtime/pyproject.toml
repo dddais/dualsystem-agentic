@@ -16,6 +16,9 @@ dependencies = [
     "uvicorn",
 ]
 
+[project.optional-dependencies]
+bridge = ["websockets>=12", "numpy", "opencv-python", "msgpack"]
+
 [project.scripts]
 robot-runtime = "robot_runtime.api.app:main"
 
@@ -25,3 +28,4 @@ include = ["robot_runtime*"]
 
 [tool.setuptools.package-data]
 "robot_runtime.configs" = ["*.yaml"]
+"robot_runtime.adapters.manual" = ["*.html"]

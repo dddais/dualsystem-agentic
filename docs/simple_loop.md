@@ -66,12 +66,15 @@ MCP 的 execute 会在创建执行后立即查询一次 Monitor，因此循环�
 
 启动前检查四个工具是否存在。执行/监控调用失败同样进入 recovering；机器人 stop 失败不继续 reset，stop/reset 任一失败会保留 recovering 状态并退出。Monitor 清理失败单独返回 `monitor_cleanup_error`：机器人仍先停止，loop 显示警告并继续恢复。Runtime 保留本地取消状态，不再发布该会话的远端旧结果。
 
-driver.execute 必须尽快返回 `executed: true` 表示动作已启动，不应阻塞到动作结束；返回 false、错误或缺少确认会导致启动失败并清理。stop 必须确认已停止，reset 必须确认已完成，不能只返回异步恢复已提交。急停后必须 reset 才能再次执行。
+driver.execute 返回 `executed: true` 后激活评分，不等待整段任务结束；manual 会等待人工开始，robot_bridge 会等待配置的启动延时。返回 false、错误或缺少确认会导致启动失败并清理。stop/reset 的交接依据由 adapter 声明：manual 等待人工操作，robot_bridge 接收命令返回并等待归位延时，不轮询物理位姿。急停后必须 reset 才能再次执行。
 
 Runtime 的同步 HTTP 路由在线程池执行，等待远端 Monitor 时相机和控制接口仍可响应。`safety.monitor_ready_timeout_s` 默认 30 秒；启动顺序是 monitor.start（`defer_inference: true`）→ 等待 GRM `warming_up=false` → driver.execute → `/monitors/activate` 开始评分。参考帧捕获期间评分保持关闭，避免动作前就产生终态。`activate` 由 Runtime 内部调用，不增加上游 MCP 操作步骤。
 
 需同时更新并重启 Robot Runtime 和 GRM Monitor；Runtime 会拒绝不支持暂缓评分的旧 GRM 服务，以免静默回到错误时序。单独使用 Monitor、不传 `defer_inference` 时仍沿用自动开始评分的行为。远端请求还有自己的超时，简单 loop 配置的 MCP HTTP 超时为 120 秒，以容纳启动等待和失败清理。
 
-当前 Robot Runtime 的 driver 仍为 placeholder，执行和恢复只记录请求；相机仍需外部程序持续更新 `/tmp/img` 下三路 JPEG。本入口修复软件调用闭环，没有实现具体机械臂驱动。
+默认 Dual-Franka 配置仍是 placeholder + 本地 JPEG；真机可选择新增的
+[manual / robot_bridge adapter](robot_bridge_adapters.md)，两者直接从 Robot Server 采图。
+manual 请使用 `examples/config.simple_loop.manual.yaml`，为人工等待保留更长的 HTTP 超时。
+自动模式使用本页原有配置，停止与归位延时在 RobotDriver 内部处理。
 
 实现：[simple_loop.py](../src/dualsystem_agentic/simple_loop.py)。测试：[循环测试](../tests/test_simple_loop.py)、[Runtime 故障与并发测试](../tests/test_runtime_contracts.py)、[跨仓库接口联调](../tests/validate_simple_stack.py)。修复与复查结果见 [系统复查报告](system_contract_review.md)。

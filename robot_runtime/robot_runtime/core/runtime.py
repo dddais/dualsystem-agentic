@@ -102,6 +102,7 @@ class RobotRuntime:
         self._cancelled: dict[str, threading.Event] = {}
         self._active_execution_id: str | None = None
         self._estop_latched = False
+        self._resetting = False
         self._timers: dict[str, threading.Timer] = {}
         self.reference_timeout = float(self.safety.get("monitor_ready_timeout_s", 30.0))
         self.max_execution_s = float(self.safety.get("max_execution_s", 300.0))
@@ -132,6 +133,8 @@ class RobotRuntime:
                 return replace(self._executions[execution.execution_id])
             if self._active_execution_id is not None:
                 raise ValueError("Stop the active execution before starting another")
+            if self._resetting:
+                raise ValueError("Wait for reset before starting another execution")
             self._executions[execution.execution_id] = execution
             self._requests[execution.execution_id] = request
             cancelled = self._cancelled.setdefault(execution.execution_id, threading.Event())
@@ -253,7 +256,12 @@ class RobotRuntime:
     def latest_observation(self) -> ObservationFrame:
         return self.camera_provider.latest()
 
-    def latest_observation_image(self, camera: str) -> ObservationImage:
+    def latest_observation_image(self, camera: str, frame_id: str | None = None) -> ObservationImage:
+        if frame_id is not None:
+            snapshot_image = getattr(self.camera_provider, "snapshot_image", None)
+            if snapshot_image is None:
+                raise KeyError("camera provider does not retain snapshots")
+            return snapshot_image(frame_id, camera)
         return self.camera_provider.latest_image(camera)
 
     def environment(self) -> JsonDict:
@@ -298,6 +306,12 @@ class RobotRuntime:
             timer = self._timers.pop(execution_id, None)
             if timer:
                 timer.cancel()
+            # Unblock operator/startup/reset waits before acquiring the driver
+            # lock. A delayed stop for an older task must not cancel a new one.
+            if self._active_execution_id in {None, execution_id}:
+                cancel = getattr(self.robot_driver, "cancel_pending", None)
+                if cancel is not None:
+                    cancel(execution_id)
         driver_error = None
         try:
             with self._driver_lock:
@@ -338,11 +352,16 @@ class RobotRuntime:
             with self._lock:
                 if self._active_execution_id is not None:
                     raise RuntimeError("Stop the active execution before reset")
-            result = self.robot_driver.reset()
-            _check_driver_result(result, "reset")
-            with self._lock:
-                self._estop_latched = False
-            return result
+                self._resetting = True
+            try:
+                result = self.robot_driver.reset()
+                _check_driver_result(result, "reset")
+                with self._lock:
+                    self._estop_latched = False
+                return result
+            finally:
+                with self._lock:
+                    self._resetting = False
 
     def emergency_stop(self) -> JsonDict:
         with self._lock:
@@ -365,8 +384,14 @@ class RobotRuntime:
     def close(self) -> None:
         with self._lock:
             active = self._active_execution_id
-        if active:
-            self.stop({"execution_id": active})
+        try:
+            if active:
+                self.stop({"execution_id": active})
+        finally:
+            for provider in (self.robot_driver, self.camera_provider, self.monitor_provider):
+                close = getattr(provider, "close", None)
+                if close is not None:
+                    close()
 
     def latest_execution_dict(self) -> JsonDict | None:
         with self._lock:

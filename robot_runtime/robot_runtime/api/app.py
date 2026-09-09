@@ -12,7 +12,7 @@ if __package__ in {None, ""}:
     sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from fastapi import Body, FastAPI
-from fastapi.responses import JSONResponse, Response
+from fastapi.responses import HTMLResponse, JSONResponse, Response
 from contextlib import asynccontextmanager
 from starlette.concurrency import run_in_threadpool
 
@@ -22,6 +22,9 @@ from robot_runtime.adapters.dual_franka.monitor_provider import (
     RemoteHTTPMonitorProvider,
 )
 from robot_runtime.adapters.dual_franka.robot_driver import PlaceholderDualFrankaRobotDriver
+from robot_runtime.adapters.manual.robot_driver import ManualRobotDriver
+from robot_runtime.adapters.robot_bridge.camera_provider import RobotBridgeCameraProvider
+from robot_runtime.adapters.robot_bridge.robot_driver import RobotBridgeRobotDriver
 from robot_runtime.core.runtime import RobotRuntime
 
 
@@ -66,6 +69,9 @@ def create_app(runtime: RobotRuntime) -> FastAPI:
             for camera in metadata["cameras"]
         }
         metadata["binary_endpoints"]["concatenated_image"] = "/observations/latest/concatenated_image.jpg"
+        endpoints = getattr(runtime.camera_provider, "binary_endpoints", None)
+        if endpoints is not None:
+            metadata["binary_endpoints"] = endpoints(frame.frame_id)
         return _ok(metadata)
 
     @app.get("/observations/latest/{camera}.jpg")
@@ -76,15 +82,41 @@ def create_app(runtime: RobotRuntime) -> FastAPI:
             return _fail(str(exc), status=404)
         except FileNotFoundError as exc:
             return _fail(str(exc), status=503)
-        return Response(
-            content=image.data,
-            media_type=image.mime_type,
-            headers={
-                "X-Frame-Id": image.frame_id,
-                "X-Camera": image.camera,
-                "X-Timestamp": str(image.timestamp),
-            },
-        )
+        return _image_response(image)
+
+    @app.get("/observations/frames/{frame_id}/{camera}.jpg")
+    def observations_snapshot(frame_id: str, camera: str):
+        try:
+            return _image_response(runtime.latest_observation_image(camera, frame_id))
+        except KeyError as exc:
+            return _fail(str(exc), status=404)
+        except FileNotFoundError as exc:
+            return _fail(str(exc), status=503)
+
+    @app.get("/manual", response_class=HTMLResponse)
+    def manual_page():
+        if not isinstance(runtime.robot_driver, ManualRobotDriver):
+            return _fail("manual adapter is not enabled", status=404)
+        page = Path(__file__).resolve().parents[1] / "adapters/manual/operator.html"
+        return HTMLResponse(page.read_text(encoding="utf-8"))
+
+    @app.get("/manual/status")
+    def manual_status():
+        if not isinstance(runtime.robot_driver, ManualRobotDriver):
+            return _fail("manual adapter is not enabled", status=404)
+        return _ok(runtime.robot_driver.status())
+
+    @app.post("/manual/ack")
+    def manual_ack(body: dict[str, Any]):
+        if not isinstance(runtime.robot_driver, ManualRobotDriver):
+            return _fail("manual adapter is not enabled", status=404)
+        request_id = body.get("request_id")
+        if not isinstance(request_id, str) or not request_id:
+            return _fail("request_id is required", status=400)
+        try:
+            return _ok(runtime.robot_driver.acknowledge(request_id))
+        except ValueError as exc:
+            return _fail(str(exc), status=409)
 
     @app.post("/executions")
     def executions(body: dict[str, Any]):
@@ -133,6 +165,10 @@ def create_app(runtime: RobotRuntime) -> FastAPI:
                     "GET  /observations/latest",
                     "GET  /observations/latest/metadata",
                     "GET  /observations/latest/{camera}.jpg",
+                    "GET  /observations/frames/{frame_id}/{camera}.jpg",
+                    "GET  /manual",
+                    "GET  /manual/status",
+                    "POST /manual/ack",
                     "POST /executions",
                     "POST /monitors/status",
                     "POST /control/stop",
@@ -153,18 +189,40 @@ def build_runtime_from_config(config: dict[str, Any]) -> RobotRuntime:
 
     robot_type = str(robot_config.get("type") or "dual_franka")
     driver_name = str(robot_config.get("driver") or "placeholder")
-    if robot_type != "dual_franka":
+    if robot_type not in {"dual_franka", "x1pro", "manual", "robot_bridge"}:
         raise ValueError(f"unsupported robot.type: {robot_type}")
-    if driver_name != "placeholder":
-        raise ValueError(f"unsupported dual_franka driver: {driver_name}")
-    robot_driver = PlaceholderDualFrankaRobotDriver()
+    if driver_name == "placeholder":
+        robot_driver = PlaceholderDualFrankaRobotDriver()
+    elif driver_name == "manual":
+        robot_driver = ManualRobotDriver(
+            operator_timeout_s=robot_config.get("operator_timeout_s", 300.0))
+    elif driver_name == "robot_bridge":
+        robot_driver = RobotBridgeRobotDriver(
+            scheduler_url=robot_config.get("scheduler_url", "ws://127.0.0.1:8088"),
+            robot_url=robot_config.get("robot_url", "ws://127.0.0.1:9946"),
+            timeout_s=robot_config.get("timeout_s", 5.0),
+            prompt_map=robot_config.get("prompt_map"),
+            stop_delay_s=robot_config.get("stop_delay_s", 1.0),
+            reset_delay_s=robot_config.get("reset_delay_s", 8.0),
+            start_delay_s=robot_config.get("start_delay_s", 0.5))
+    else:
+        raise ValueError(f"unsupported robot.driver: {driver_name}")
 
     camera_provider_name = str(camera_config.get("provider") or "local_files")
-    if camera_provider_name != "local_files":
+    if camera_provider_name == "local_files":
+        camera_provider = DualFrankaLocalFileCameraProvider(
+            image_dir=camera_config.get("image_dir") or "/tmp/img")
+    elif camera_provider_name == "robot_bridge":
+        camera_provider = RobotBridgeCameraProvider(
+            robot_url=camera_config.get("robot_url", robot_config.get("robot_url", "ws://127.0.0.1:9946")),
+            timeout_s=camera_config.get("timeout_s", 5.0),
+            cache_s=camera_config.get("cache_s", 0.5),
+            snapshot_ttl_s=camera_config.get("snapshot_ttl_s", 30.0),
+            max_snapshots=camera_config.get("max_snapshots", 32),
+            max_obs_lag_s=camera_config.get("max_obs_lag_s", 3.0),
+            quality=camera_config.get("quality", 90), size=camera_config.get("size"))
+    else:
         raise ValueError(f"unsupported camera.provider: {camera_provider_name}")
-    camera_provider = DualFrankaLocalFileCameraProvider(
-        image_dir=camera_config.get("image_dir") or "/tmp/img"
-    )
 
     monitor_provider_name = str(monitor_config.get("provider") or "local_memory")
     if monitor_provider_name in {"local_memory", "local_grm"}:
@@ -204,6 +262,14 @@ def load_runtime_config(path: str | Path) -> dict[str, Any]:
 
 def _ok(data: object = None, message: str = "ok") -> JSONResponse:
     return JSONResponse({"success": True, "data": data, "message": message})
+
+
+def _image_response(image) -> Response:
+    headers = {"X-Frame-Id": image.frame_id, "X-Camera": image.camera,
+               "Cache-Control": "no-store"}
+    if image.timestamp is not None:
+        headers["X-Timestamp"] = str(image.timestamp)
+    return Response(content=image.data, media_type=image.mime_type, headers=headers)
 
 
 def _fail(message: str, *, status: int) -> JSONResponse:

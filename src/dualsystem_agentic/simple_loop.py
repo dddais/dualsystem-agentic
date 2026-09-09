@@ -25,8 +25,8 @@ class SimpleRobotLoop:
     """One operator, one robot, one execution at a time.
 
     The execute tool delegates monitor startup to Robot Runtime. Recovery uses
-    synchronous stop/reset tool acknowledgements; it does not infer physical
-    recovery completion from a GRM score.
+    stop/reset tool acknowledgements (operator or configured settling delay);
+    it does not infer recovery completion from a GRM score.
     """
 
     def __init__(
@@ -101,12 +101,14 @@ class SimpleRobotLoop:
         self.write("[recovering] 中止任务并恢复")
         stopped = self._call(self.stop_tool, {"execution_id": self.identity["execution_id"]})
         if stopped.get("stopped") is not True:
-            raise RuntimeError("stop tool did not acknowledge physical stop")
+            raise RuntimeError("stop tool did not acknowledge stop")
         if stopped.get("monitor_cleanup_error"):
             self.write(f"[warning] 机器人已停止，Monitor 清理失败: {stopped['monitor_cleanup_error']}")
         recovered = self._call(self.recover_tool)
         if recovered.get("reset") is not True:
             raise RuntimeError("recovery tool did not acknowledge completed reset")
+        if recovered.get("completion_basis") == "command_and_delay":
+            self.write(f"[recovering] 已等待归位 {recovered.get('wait_s', 0):g} 秒")
         self.identity = {}
         self.phase = SimplePhase.READY
         self.write("[ready] 中止与恢复完成")
@@ -139,6 +141,10 @@ class SimpleRobotLoop:
             if data.get("execution_id") != self.identity["execution_id"] or not data.get("monitor_id"):
                 raise RuntimeError("execute returned missing or mismatched execution/monitor IDs")
             self.identity["monitor_id"] = data["monitor_id"]
+            # Manual startup can spend minutes waiting for the operator. Score
+            # freshness budgets begin when execute has returned and activated
+            # monitoring; the HTTP call has its own startup timeout.
+            started = last_advance = self.clock()
             arguments = {**self.identity, "subtask": subtask, "subtask_index": 0}
             while True:
                 status = str(data.get("status") or data.get("monitor_status") or "").strip().lower()
