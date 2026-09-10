@@ -405,6 +405,16 @@ function renderBridge() {
   for (const button of modes.children) button.setAttribute("aria-pressed", String(button.dataset.mode === s.mode));
   $("bridge-record").textContent = s.recording ? "停止录制（录制中）" : "开始录制";
   $("bridge-record").setAttribute("aria-pressed", String(!!s.recording));
+  const recording = status.recording || {};
+  const recordingStates = {idle: "等待录制", recording: "正在记录", stopping: "正在停止视频录制", finalizing: "正在补齐进度数据",
+    complete: "记录已保存", incomplete: "记录不完整", interrupted: "记录已中断"};
+  $("progress-recording-status").textContent = recording.enabled
+    ? `视频 + GRM 进度 · ${recordingStates[recording.state] || recording.state} · ${recording.record_count || 0} 条评分`
+    : "GRM 进度录制未启用；需启用 Runtime recording 配置。";
+  $("progress-recording-path").textContent = recording.directory ? `Runtime 保存位置：${recording.directory}` : "";
+  $("progress-recording-error").textContent = [s.recording_info?.error, recording.error, ...(recording.warnings || [])].filter(Boolean).join(" · ");
+  $("progress-recording-download").hidden = !recording.download_ready;
+  if (recording.download_ready) $("progress-recording-download").href = `/manual/recordings/${encodeURIComponent(recording.recording_id)}/download`;
   $("bridge-lock").textContent = s.phase_locked ? "解锁 phase" : "锁定 phase";
   $("bridge-lock").setAttribute("aria-pressed", String(!!s.phase_locked));
   $("bridge-latency").textContent = s.latency_step ?? "—";
@@ -415,6 +425,7 @@ function renderBridge() {
   }
   for (const button of document.querySelectorAll("#bridge-controls [data-action]")) {
     button.disabled = !allowed.includes(button.dataset.action) || !supported.includes(button.dataset.action)
+      || (button.dataset.action === "toggle_recording" && !!s.recording_info?.busy)
       || (button.dataset.action === "step" && !s.single_step);
   }
   for (const input of document.querySelectorAll("#bridge-controls input, #bridge-controls select")) {

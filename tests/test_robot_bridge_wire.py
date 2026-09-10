@@ -263,3 +263,40 @@ def test_text_prompt_change_invalidates_an_inflight_prediction(stack):
             policy.release.set()
             scheduler._step_event.set()
             control.close()
+
+
+@pytest.mark.parametrize("instruction", [
+    "Move the red cup beside the box, then release it.",
+    "把红杯放到 {box} 旁。\n然后松开夹爪。",
+])
+def test_text_instruction_reaches_openpi_policy_infer_without_aliasing(stack, instruction):
+    """Exercise the real OpenPI adapter too; replace only the loaded model.
+
+    This proves delivery to policy.infer, not tokenization or checkpoint
+    behavior, which require the actual deployed OpenPI environment/weights.
+    """
+    from robot_bridge.policy.backends.openpi import OpenPiBackend
+
+    _, policy, scheduler, robot_url, control_url = stack
+    received = []
+
+    class ModelProbe:
+        def infer(self, obs):
+            received.append(obs)
+            return {"actions": np.zeros((4, 28), np.float32)}
+
+    adapter = OpenPiBackend.__new__(OpenPiBackend)
+    adapter._policy = ModelProbe()
+    policy.infer = adapter.infer
+    # Even legacy default settings / an alias must not replace a web task.
+    driver = RobotBridgeRobotDriver(control_url, robot_url=robot_url,
+        prompt_map={instruction: "pick carrot"}, start_delay_s=0, stop_delay_s=0, reset_delay_s=0)
+    try:
+        result = driver.execute(ExecutionRequest(instruction, options={"prompt_mode": "text"}),
+                                ExecutionState("probe", "monitor", instruction))
+        assert result["prompt"] == instruction and result["prompt_mode"] == "text"
+        assert scheduler.run_iteration() == "ok"
+        assert len(received) == 1 and received[0]["prompt"] == instruction
+        assert "cmd" not in received[0]
+    finally:
+        driver.close()

@@ -32,3 +32,10 @@ monitor:
 safety:
   monitor_ready_timeout_s: 30.0
   max_execution_s: 300.0
+
+# Record / R also saves GRM history on the Runtime machine, independent of the browser.
+recording:
+  enabled: true
+  output_dir: runs/recordings
+  poll_interval_s: 0.5
+  finalize_timeout_s: 30.0

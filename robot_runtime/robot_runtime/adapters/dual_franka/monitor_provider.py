@@ -8,6 +8,7 @@ import re
 import time
 import urllib.error
 import urllib.request
+import urllib.parse
 from dataclasses import replace
 
 from robot_runtime.core.types import (
@@ -143,6 +144,15 @@ class RemoteHTTPMonitorProvider:
 
     def health(self) -> JsonDict:
         return {"provider": "remote_http", "url": self.url}
+
+    def progress_records(self, monitor_id: str, execution_id: str, cursor: int = 0) -> JsonDict:
+        query = urllib.parse.urlencode({"execution_id": execution_id, "cursor": cursor, "limit": 100})
+        path = f"/monitors/{urllib.parse.quote(monitor_id, safe='')}/records?{query}"
+        with urllib.request.urlopen(self.url + path, timeout=min(self.timeout, 2.0)) as response:
+            content = response.read(16 * 1024 * 1024 + 1)
+        if len(content) > 16 * 1024 * 1024:
+            raise ValueError("progress journal page exceeds 16 MiB")
+        return _unwrap(json.loads(content))
 
     def frame_image(self, frame_set_id: str, camera: str) -> bytes:
         if not re.fullmatch(r"[a-f0-9]{32}", frame_set_id) or camera not in {

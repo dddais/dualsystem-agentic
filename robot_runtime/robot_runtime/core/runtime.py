@@ -88,6 +88,7 @@ class RobotRuntime:
         camera_provider: CameraProvider,
         monitor_provider: MonitorProvider,
         safety: JsonDict | None = None,
+        recording: JsonDict | None = None,
     ) -> None:
         self.robot_type = robot_type
         self.robot_driver = robot_driver
@@ -109,6 +110,26 @@ class RobotRuntime:
         self.max_execution_s = float(self.safety.get("max_execution_s", 300.0))
         if any(not math.isfinite(v) or v <= 0 for v in (self.reference_timeout, self.max_execution_s)):
             raise ValueError("monitor_ready_timeout_s and max_execution_s must be finite and positive")
+        self.recorder = None
+        if recording is not None and recording.get("enabled", True):
+            if not hasattr(robot_driver, "scheduler_status"):
+                raise ValueError("progress recording requires the manual_bridge driver")
+            from robot_runtime.recording import ProgressRecorder
+            self.recorder = ProgressRecorder(self, **{k: v for k, v in recording.items() if k != "enabled"})
+
+    def start(self):
+        if self.recorder is not None:
+            self.recorder.start()
+
+    def recording_status(self):
+        return self.recorder.status() if self.recorder is not None else {"enabled": False}
+
+    def recording_monitors(self, since):
+        with self._lock:
+            return deepcopy([{**m.to_dict(), "target_queries": self._requests[m.execution_id].target_queries}
+                for m in self._monitors.values()
+                if m.updated_at >= since or self._executions[m.execution_id].updated_at >= since
+                or m.execution_id == self._active_execution_id])
 
     def create_execution(self, payload: JsonDict) -> ExecutionState:
         request = ExecutionRequest.from_payload(payload)
@@ -389,6 +410,8 @@ class RobotRuntime:
             if active:
                 self.stop({"execution_id": active})
         finally:
+            if self.recorder is not None:
+                self.recorder.close()
             for provider in (self.robot_driver, self.camera_provider, self.monitor_provider):
                 close = getattr(provider, "close", None)
                 if close is not None:
@@ -442,7 +465,10 @@ class RobotRuntime:
             # Keep the runtime state lock free for the independent emergency
             # stop path while scheduler I/O is pending. The execution token
             # prevents a delayed status reply from issuing a resume afterwards.
-            return self.robot_driver.scheduler_action(name, args, cancelled=cancelled)
+            result = self.robot_driver.scheduler_action(name, args, cancelled=cancelled)
+            if name == "toggle_recording" and self.recorder is not None:
+                self.recorder.notify(result)
+            return result
         finally:
             self._driver_lock.release()
 

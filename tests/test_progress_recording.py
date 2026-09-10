@@ -1,0 +1,272 @@
+"""Recording windows and durable exports with simulated Scheduler/GRM I/O."""
+
+from copy import deepcopy
+import csv
+import io
+import json
+import time
+from types import SimpleNamespace
+import urllib.error
+import zipfile
+
+import pytest
+from fastapi.testclient import TestClient
+
+from robot_runtime.api.app import create_app
+from robot_runtime.recording import ProgressRecorder
+from test_bridge_adapters import eventually
+from test_manual_bridge import make_stack
+
+
+class Journal:
+    url = "http://monitor.invalid"
+
+    def __init__(self):
+        self.rows, self.errors, self.calls = {}, {}, []
+        self.read_at = time.time() + 100
+
+    def progress_records(self, mid, execution, cursor=0):
+        self.calls.append((mid, cursor))
+        if mid in self.errors:
+            raise self.errors[mid]
+        rows = self.rows.get(mid, [])
+        end = min(cursor + 2, len(rows))  # Exercise pagination with short pages.
+        return dict(monitor_id=mid, execution_id=execution, generation=mid,
+                    records=deepcopy(rows[cursor:end]), next_cursor=end,
+                    has_more=end < len(rows), read_at=self.read_at,
+                    session_dir=f"/monitor/{mid}", complete=False)
+
+
+class Scheduler:
+    def __init__(self):
+        self.state = {"recording": False}
+        self.calls, self.error, self.closed = [], None, False
+
+    def call(self, request):
+        self.calls.append(request)
+        assert request == {"cmd": "status"}  # Recording never issues controls.
+        if self.error:
+            raise self.error
+        return {"status": "ok", "state": deepcopy(self.state)}
+
+    def close(self):
+        self.closed = True
+
+
+def monitor(mid, created_at):
+    return dict(monitor_id=mid, execution_id="ex-" + mid, subtask="抓取 carrot",
+                created_at=created_at, target_queries=["carrot"], result={})
+
+
+def score(step, stamp):
+    return dict(inference_step=step, inference_updated_at=stamp, progress=step / 10,
+                status="running", observation={"snapshot_requested_at": stamp - .25},
+                modes={"forward": {"score": .2, "progress": .3}},
+                branches={"baseline": {"progress": .1}}, comparison={"difference": .2})
+
+
+def state(key, started, ended=None, phase=None):
+    info = dict(id=key, started_at=started, clock="scheduler_unix",
+                state=phase or ("recording" if ended is None else "stopped"),
+                episode_dir="/robot/" + key)
+    if ended is not None:
+        info.update(stopped_at=ended, archive="/robot/" + key + ".tar")
+    return dict(recording=ended is None, recording_info=info)
+
+
+@pytest.fixture
+def stack(tmp_path):
+    journal, scheduler, monitors = Journal(), Scheduler(), []
+    runtime = SimpleNamespace(monitor_provider=journal, recording_monitors=lambda since: deepcopy(monitors),
+                              robot_driver=SimpleNamespace(bridge=SimpleNamespace(scheduler_url="ws://scheduler.invalid")))
+    recorder = ProgressRecorder(runtime, output_dir=tmp_path, poll_interval_s=.01,
+                                finalize_timeout_s=.5, scheduler_client=scheduler)
+    yield recorder, journal, scheduler, monitors
+    recorder.close()
+
+
+def export(recorder, key):
+    session = recorder._sessions[key]
+    for _ in range(30):
+        if session["closed"]:
+            break
+        recorder._collect(session)
+    assert session["closed"]
+    with zipfile.ZipFile(recorder.archive(session["manifest"]["recording_id"])) as z:
+        manifest = json.loads(z.read("manifest.json"))
+        rows = [json.loads(line) for line in z.read("progress.jsonl").splitlines()]
+        table = list(csv.DictReader(io.StringIO(z.read("progress.csv").decode())))
+    assert manifest["record_count"] == len(rows) == len(table)
+    assert all(row["instruction"] == "抓取 carrot" for row in rows)
+    return manifest, rows, table
+
+
+def test_paged_journals_capture_all_steps_across_tasks_and_final_window(stack):
+    r, j, _, monitors = stack
+    t = time.time()
+    monitors.extend([monitor("one", t - 2), monitor("two", t + 1)])
+    j.rows = {"one": [score(i, t - 1 + i * .2) for i in range(1, 13)],
+              "two": [score(i, t + 1 + i * .2) for i in range(1, 6)]}
+    r._observe(state("video", t))
+    for _ in range(8):
+        r._collect(r._sessions["video"])
+    assert r.status()["record_count"] == 13  # Includes rows later than stop until poll arrives.
+    r._observe(state("video", t, t + 1.5))
+    m, rows, table = export(r, "video")
+    assert m["state"] == "complete" and m["capture_quality"] == "journal"
+    assert len(rows) == 10
+    assert {(row["monitor_id"], row["inference_step"]) for row in rows} == {
+        *[("one", i) for i in range(5, 13)], ("two", 1), ("two", 2)}
+    assert all(0 <= row["elapsed_s"] <= 1.5 for row in rows)
+    assert table[0]["forward_score"] == "0.2" and table[0]["baseline_progress"] == "0.1"
+    assert m["sources"]["one"]["target_queries"] == ["carrot"]
+    assert m["video"]["archive"] == "/robot/video.tar"
+
+
+def test_pending_stop_filters_scores_and_failed_stop_replays_them(stack):
+    r, j, _, monitors = stack
+    t = time.time()
+    monitors.append(monitor("one", t))
+    j.rows["one"] = [score(1, t + .1), score(2, t + .3)]
+    r._observe(state("video", t))
+    r._observe(state("video", t, t + .2, "stopping"))
+    r._collect(r._sessions["video"])
+    assert r.status()["record_count"] == 1 and not r.status()["download_ready"]
+    r._observe(state("video", t))  # Robot rejected stop; recording continues.
+    r._collect(r._sessions["video"])
+    assert r.status()["record_count"] == 2
+    r._observe(state("video", t, t + .4))
+    assert len(export(r, "video")[1]) == 2
+
+
+def test_rapid_sessions_use_scheduler_history_and_ignore_pre_runtime_history(stack):
+    r, _, _, _ = stack
+    t = time.time()
+    r._observe(state("one", t, t + .1, "stopping"))
+    second = state("two", t + .2, t + .3)
+    second["recording_history"] = [state("old", t - 100, t - 90)["recording_info"],
+                                    state("one", t, t + .1)["recording_info"]]
+    r._observe(second)
+    assert "old" not in r._sessions
+    assert export(r, "one")[0]["video"]["archive"] == "/robot/one.tar"
+    assert export(r, "two")[0]["state"] == "complete"
+    assert r._sessions["one"]["dir"] != r._sessions["two"]["dir"]
+
+
+def test_transient_source_failure_backfills_before_finalizing(stack):
+    r, j, _, monitors = stack
+    t = time.time()
+    monitors.append(monitor("one", t))
+    j.rows["one"] = [score(i, t + .01 * i) for i in range(1, 8)]
+    j.errors["one"] = OSError("temporary monitor disconnect")
+    r._observe(state("video", t, t + .1))
+    r._collect(r._sessions["video"])
+    assert "disconnect" in r.status()["error"] and not r.status()["download_ready"]
+    j.errors.clear()
+    m, rows, _ = export(r, "video")
+    assert len(rows) == 7 and m["error"] is None and m["state"] == "complete"
+
+
+@pytest.mark.parametrize("missing", ["journal", "watermark", "archive"])
+def test_finalize_timeout_is_explicitly_incomplete(stack, missing):
+    r, j, _, monitors = stack
+    t = time.time()
+    monitors.append(monitor("one", t))
+    if missing == "journal":
+        j.errors["one"] = OSError("offline")
+    if missing == "watermark":
+        j.read_at = t
+    r._observe(state("video", t, t + .1, "stopping" if missing == "archive" else "stopped"))
+    r._sessions["video"]["drain_started"] -= 10
+    m, _, _ = export(r, "video")
+    assert m["state"] == "incomplete" and m["error"]
+
+
+def test_initial_404_does_not_claim_legacy_but_lost_registered_journal_is_error(stack):
+    r, j, _, monitors = stack
+    t = time.time()
+    monitors.append(monitor("one", t))
+    monitors[0]["result"] = {"warming_up": True}
+    j.errors["one"] = urllib.error.HTTPError("url", 404, "not found", {}, None)
+    r._observe(state("video", t))
+    r._collect(r._sessions["video"])
+    assert not r.status()["warnings"]
+    j.errors.clear()
+    r._collect(r._sessions["video"])
+    j.errors["one"] = urllib.error.HTTPError("url", 404, "not found", {}, None)
+    r._collect(r._sessions["video"])
+    assert "404" in r.status()["error"] and not r.status()["warnings"]
+
+
+def test_legacy_snapshots_are_marked_and_never_advance_monitor_status(stack):
+    r, _, _, monitors = stack
+    t = time.time()
+    r.runtime.monitor_provider = SimpleNamespace()  # No status() method either.
+    monitors.append(monitor("one", t))
+    monitors[0]["result"] = score(2, t + .1)
+    r._observe(state("video", t, t + .2))
+    m, rows, _ = export(r, "video")
+    assert m["capture_quality"] == "snapshot_only" and m["warnings"]
+    assert len(rows) == 1 and rows[0]["capture_mode"] == "status_snapshots"
+
+
+def test_legacy_scheduler_uses_local_window_and_warns_video_path_is_unknown(stack):
+    r, _, _, _ = stack
+    r._observe({"recording": True})
+    key = r._legacy_key
+    r._observe({"recording": False})
+    m, rows, _ = export(r, key)
+    assert m["state"] == "complete" and not rows
+    assert m["stopped_at"] >= m["started_at"]
+    assert m["video"]["clock"] == "runtime_unix" and m["warnings"]
+    assert m["video"].get("archive") is None
+
+
+def test_worker_collects_during_scheduler_outage_and_shutdown_keeps_data(stack):
+    r, j, s, monitors = stack
+    t = time.time()
+    monitors.append(monitor("one", t))
+    s.error = OSError("scheduler offline")
+    r.notify(state("video", t))
+    r.start()
+    eventually(lambda: r.status()["state"] == "recording")
+    j.rows["one"] = [score(1, t + .01)]
+    eventually(lambda: r.status().get("record_count") == 1)
+    assert "scheduler offline" in r.status()["error"]
+    r.close()
+    assert not r._thread.is_alive() and s.closed
+    assert export(r, "video")[0]["state"] == "interrupted"
+
+
+def test_download_is_limited_to_finished_registered_artifacts(stack):
+    r, _, _, _ = stack
+    runtime, driver, _, _ = make_stack()
+    runtime.recorder = r
+    t = time.time()
+    r._observe(state("video", t))
+    rid = r.status()["recording_id"]
+    client = TestClient(create_app(runtime))
+    assert client.get(f"/manual/recordings/{rid}/download").status_code == 404
+    r._observe(state("video", t, t + .1))
+    export(r, "video")
+    result = client.get(f"/manual/recordings/{rid}/download")
+    assert result.status_code == 200 and result.headers["content-type"] == "application/zip"
+    assert zipfile.is_zipfile(io.BytesIO(result.content))
+    assert client.get("/manual/recordings/progress.zip/download").status_code == 404
+    assert client.get("/manual/recordings/%2e%2e%2fsecret/download").status_code == 404
+    driver.close()
+
+
+def test_export_retries_after_zip_failure(stack, monkeypatch):
+    r, _, _, _ = stack
+    t = time.time()
+    r._observe(state("video", t, t + .1))
+    real_zip = zipfile.ZipFile
+    def fail(*args, **kwargs):
+        raise OSError("disk unavailable")
+    monkeypatch.setattr(zipfile, "ZipFile", fail)
+    with pytest.raises(OSError):
+        r._collect(r._sessions["video"])
+    assert r.status()["state"] == "finalizing" and not r.status()["download_ready"]
+    monkeypatch.setattr(zipfile, "ZipFile", real_zip)
+    assert export(r, "video")[0]["state"] == "complete"

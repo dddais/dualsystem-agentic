@@ -35,6 +35,7 @@ def create_app(runtime: RobotRuntime) -> FastAPI:
 
     @asynccontextmanager
     async def lifespan(app):
+        runtime.start()
         yield
         await run_in_threadpool(runtime.close)
 
@@ -108,8 +109,19 @@ def create_app(runtime: RobotRuntime) -> FastAPI:
     def manual_status():
         if not isinstance(runtime.robot_driver, ManualRobotDriver):
             return _fail("manual adapter is not enabled", status=404)
-        return _ok({**runtime.robot_driver.status(), **runtime.manual_snapshot(),
+        return _ok({**runtime.robot_driver.status(), **runtime.manual_snapshot(), "recording": runtime.recording_status(),
                     "input": target_input.status()})
+
+    @app.get("/manual/recordings/{recording_id}/download")
+    def progress_recording_download(recording_id: str):
+        from fastapi.responses import FileResponse
+        if runtime.recorder is None:
+            return _fail("progress recording is not enabled", status=404)
+        try:
+            path = runtime.recorder.archive(recording_id)
+        except KeyError as exc:
+            return _fail(str(exc), status=404)
+        return FileResponse(path, media_type="application/zip", filename=f"{recording_id}.zip")
 
     @app.get("/manual/app.js")
     def manual_script():
@@ -293,6 +305,7 @@ def create_app(runtime: RobotRuntime) -> FastAPI:
                     "GET  /observations/frames/{frame_id}/{camera}.jpg",
                     "GET  /manual",
                     "GET  /manual/status",
+                    "GET  /manual/recordings/{recording_id}/download",
                     "POST /manual/ack",
                     "POST /manual/action",
                     "GET  /manual/bridge/status",
@@ -387,6 +400,7 @@ def build_runtime_from_config(config: dict[str, Any]) -> RobotRuntime:
         camera_provider=camera_provider,
         monitor_provider=monitor_provider,
         safety=safety_config,
+        recording=dict(config.get("recording") or {}) if driver_name == "manual_bridge" else None,
     )
 
 
