@@ -19,20 +19,27 @@ class _ControlRequest(_OperatorRequest):
     cancelled: threading.Event = field(default_factory=threading.Event)
     phase: str = "waiting"
     result: dict = field(default_factory=dict)
+    choice: str | None = None
+    allow_adjustment: bool = False
+    trigger: str = "operator"
 
     def public(self):
-        return {**super().public(), "phase": self.phase, "error": self.error}
+        return {**super().public(), "phase": self.phase, "error": self.error,
+                "choice": self.choice, "allow_adjustment": self.allow_adjustment, "trigger": self.trigger}
 
 
 class ManualBridgeRobotDriver(ManualRobotDriver):
     # Lifecycle controls are handled by the runtime, never by a raw proxy.
     SETTINGS = {"toggle_recording", "set_person", "set_phase", "toggle_phase_lock", "toggle_digit_mode",
                 "adjust_latency", "adjust_move_steps", "set_gripper_map", "set_prompt"}
-    MOTION = {"set_mode", "toggle_single_step", "step"}
+    MOTION = {"toggle_single_step", "step"}
 
-    def __init__(self, *, operator_timeout_s=300.0, bridge_driver=None,
+    def __init__(self, *, operator_timeout_s=300.0, auto_stop=False, bridge_driver=None,
                  control_client=None, **bridge_config):
         super().__init__(operator_timeout_s=operator_timeout_s)
+        if type(auto_stop) is not bool:
+            raise ValueError("robot.auto_stop must be boolean")
+        self.auto_stop = auto_stop
         self.bridge = bridge_driver or RobotBridgeRobotDriver(**bridge_config)
         # Dashboard polling/logs must not wait behind a lifecycle command.
         self._control = control_client or BridgeClient(
@@ -40,6 +47,9 @@ class ManualBridgeRobotDriver(ManualRobotDriver):
             json_protocol=True)
         self._last_operation = None
         self._execute_args = None
+        self._operator_stop_ids = set()
+        self._requested_controls = set()
+        self._home_requested = False
 
     def execute(self, request, execution):
         self._execute_args = (request, execution)
@@ -48,19 +58,50 @@ class ManualBridgeRobotDriver(ManualRobotDriver):
     def acknowledge(self, request_id):
         raise ValueError("manual_bridge requires /manual/action; acknowledgement cannot complete a robot command")
 
-    def request_action(self, request_id):
+    def request_stop(self, execution_id):
         with self._lock:
-            if request_id in self._acknowledged:
+            self._operator_stop_ids.add(execution_id)
+
+    def request_home(self):
+        with self._lock:
+            self._home_requested = True
+
+    def recover(self, *, allow_adjustment=True):
+        with self._lock:
+            if self._active_id is not None:
+                raise RuntimeError("stop the task before recovery")
+        return self._wait("recover", self._last_stopped, self._instruction, allow_adjustment=allow_adjustment)
+
+    def request_action(self, request_id, control=None):
+        with self._lock:
+            if (control is None and request_id in self._acknowledged) or (request_id, control) in self._requested_controls:
                 return {"accepted": True, "already_requested": True, "request_id": request_id}
             pending = self._pending
             if pending is None or pending.request_id != request_id or pending.error:
                 raise ValueError("manual request expired or does not match the pending action")
+            control = control or {"execute": "autonomous", "stop": "idle", "reset": "homing", "recover": "homing"}[pending.action]
+            allowed = self.pending_controls(pending)
+            if control not in allowed:
+                raise ValueError("VLA control is unavailable in the current loop phase")
             self._acknowledged.add(request_id)
-            pending.phase = "queued"
+            self._requested_controls.add((request_id, control))
+            finishing = pending.phase == "adjusting"
+            if not finishing:
+                pending.choice = control
+            pending.phase = "finishing" if finishing else "queued"
             pending.clicked.set()
             return {"accepted": True, "request_id": request_id}
 
-    def _wait(self, action, execution_id, instruction):
+    @staticmethod
+    def pending_controls(pending):
+        if pending.phase == "adjusting":
+            return ["idle"]
+        if pending.phase != "waiting":
+            return []
+        return {"execute": ["autonomous"], "stop": ["idle"], "reset": ["homing"],
+                "recover": ["homing"] + (["teleop"] if pending.allow_adjustment else [])}[pending.action]
+
+    def _wait(self, action, execution_id, instruction, *, allow_adjustment=False):
         with self._lock:
             if self._closed:
                 raise RuntimeError("manual_bridge driver is closed")
@@ -71,8 +112,16 @@ class ManualBridgeRobotDriver(ManualRobotDriver):
             if pending and (pending.action, pending.execution_id) != (action, execution_id):
                 raise RuntimeError(f"operator is still handling {pending.action}")
             if owner:
-                pending = _ControlRequest(action, execution_id, instruction)
+                pending = _ControlRequest(action, execution_id, instruction, allow_adjustment=allow_adjustment)
                 self._pending = pending
+                if action == "stop" and (self.auto_stop or execution_id in self._operator_stop_ids):
+                    pending.trigger = "operator" if execution_id in self._operator_stop_ids else "automatic"
+                    pending.choice, pending.phase = "idle", "queued"
+                    pending.clicked.set()
+                elif action in {"reset", "recover"} and self._home_requested:
+                    self._home_requested = False
+                    pending.choice, pending.phase = "homing", "queued"
+                    pending.clicked.set()
         if owner:
             try:
                 clicked = pending.clicked.wait(self.operator_timeout_s)
@@ -86,15 +135,34 @@ class ManualBridgeRobotDriver(ManualRobotDriver):
                     result = self.bridge.execute(*self._execute_args, cancelled=pending.cancelled)
                 elif action == "stop":
                     result = self.bridge.stop(execution_id)
+                elif action == "recover" and pending.choice == "teleop":
+                    self.bridge.begin_adjustment(cancelled=pending.cancelled)
+                    with self._lock:
+                        if pending.error:
+                            raise RuntimeError(pending.error)
+                        pending.clicked.clear()
+                        pending.phase = "adjusting"
+                    if not pending.clicked.wait(self.operator_timeout_s):
+                        raise RuntimeError("teleoperation adjustment timed out; returning to idle")
+                    self.bridge._check_cancelled(pending.cancelled)
+                    result = self.bridge.end_adjustment(cancelled=pending.cancelled)
                 else:
                     result = self.bridge.reset(cancelled=pending.cancelled)
+                    if action == "recover":
+                        result.update(recovered=True, recovery_method="homing", homed=True)
                 with self._lock:
                     if pending.error:
                         raise RuntimeError(pending.error)
                     pending.result = {**result, "manual": True, "provider": "manual_bridge",
-                                      "operator_triggered": True, "request_id": pending.request_id}
+                                      "operator_triggered": pending.trigger == "operator", "request_id": pending.request_id}
                     pending.phase = "completed"
             except Exception as exc:
+                if action == "recover" and pending.choice == "teleop":
+                    # Never leave teleop running after a timeout/cancel/error.
+                    try:
+                        self.bridge.stop(execution_id)
+                    except Exception as stop_exc:
+                        exc = RuntimeError(f"{exc}; adjustment stop failed: {stop_exc}")
                 with self._lock:
                     pending.error = str(exc)
                     pending.phase = "failed"
@@ -113,10 +181,11 @@ class ManualBridgeRobotDriver(ManualRobotDriver):
 
     def cancel_pending(self, execution_id=None):
         with self._lock:
+            self._home_requested = False
             if execution_id is not None:
                 self._cancelled_ids.add(execution_id)
             pending = self._pending
-            if pending and pending.action in {"execute", "reset"} and (
+            if pending and pending.action in {"execute", "reset", "recover"} and (
                 execution_id is None or pending.execution_id == execution_id
             ):
                 pending.error = f"manual {pending.action} cancelled"
@@ -171,6 +240,8 @@ class ManualBridgeRobotDriver(ManualRobotDriver):
         with self._lock:
             return {**super().status(), "provider": "manual_bridge", "control_mode": "bridge",
                     "scheduler_url": self.bridge.scheduler_url, "robot_url": self.bridge.robot_url,
+                    "auto_stop": self.auto_stop,
+                    "pending_controls": self.pending_controls(self._pending) if self._pending else [],
                     "last_operation": self._last_operation}
 
     def capabilities(self):

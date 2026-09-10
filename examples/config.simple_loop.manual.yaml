@@ -16,6 +16,9 @@ loop:
   monitor_poll_interval_s: 1.0
 
 simple_loop:
+  # manual_bridge: choose Homing or teleoperation adjustment in VLA controls.
+  # Original manual falls back to its existing manual reset confirmation.
+  recover_tool: recover_task
   input_source: web
   instruction_template: "pick the {target} and put it into the box"
   # Additional templates shown in /manual; each contains only {target}.

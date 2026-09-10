@@ -23,7 +23,7 @@ Environment variables:
     DUAL_FRANKA_EXECUTE_METHOD   Execute method (default: POST)
     DUAL_FRANKA_STOP_PATH        Stop path (default: /control/stop)
     DUAL_FRANKA_RESET_PATH       Reset path (default: /control/reset)
-    DUAL_FRANKA_ENABLE_RESET     Set true to expose reset_task (default: false)
+    DUAL_FRANKA_ENABLE_RESET     Set true to expose reset_task / recover_task (default: false)
     DUAL_FRANKA_ESTOP_PATH       Emergency stop path (default: /control/emergency_stop)
     DUAL_FRANKA_TIMEOUT_S        HTTP timeout seconds (default: 30)
     DUAL_FRANKA_UNKNOWN_STATUS   Fallback monitor status (default: running)
@@ -163,6 +163,9 @@ async def list_tools() -> list[types.Tool]:
         ]
     )
     if ENABLE_RESET:
+        tools.append(types.Tool(
+            name="recover_task", description="After stop, wait for homing or operator teleoperation adjustment; returns recovered=true.",
+            inputSchema={"type": "object", "properties": {"execution_id": {"type": "string"}}}))
         tools.append(
             types.Tool(
                 name="reset_task",
@@ -195,6 +198,8 @@ async def _dispatch(client: httpx.AsyncClient, name: str, arguments: dict) -> di
         return await _request(client, "POST", STOP_PATH, json_data=arguments or None)
     if name == "reset_task" and ENABLE_RESET:
         return await _request(client, "POST", RESET_PATH)
+    if name == "recover_task" and ENABLE_RESET:
+        return await _request(client, "POST", "/control/recover", json_data=arguments or None)
     if name == "emergency_stop":
         return await _request(client, "POST", ESTOP_PATH)
     raise ValueError(f"unknown tool: {name}")

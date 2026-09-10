@@ -56,7 +56,7 @@ class SimpleRobotLoop:
         execute_tool: str = "execute",
         monitor_tool: str = "monitor",
         stop_tool: str = "stop_task",
-        recover_tool: str = "reset_task",
+        recover_tool: str | None = None,
         settings: SimpleLoopConfig | None = None,
         read_input: Callable[[str], str | TaskInput] = input,
         write: Callable[[str], None] = print,
@@ -71,8 +71,10 @@ class SimpleRobotLoop:
         self.execute_tool = execute_tool
         self.monitor_tool = monitor_tool
         self.stop_tool = stop_tool
-        self.recover_tool = recover_tool
         self.settings = settings or SimpleLoopConfig()
+        self.recover_tool = recover_tool or self.settings.recover_tool
+        if not isinstance(self.recover_tool, str) or not self.recover_tool.strip():
+            raise ValueError("recover_tool must be a nonempty tool name")
         fields = list(Formatter().parse(self.settings.instruction_template))
         if not any(field == "target" for _, field, _, _ in fields) or any(
             field is not None and (field != "target" or spec or conversion)
@@ -106,7 +108,7 @@ class SimpleRobotLoop:
         if not result.ok:
             raise RuntimeError(f"{name}: {result.error or 'tool call failed'}")
         data = result.data
-        if any(data.get(key) is False for key in ("success", "ok", "executed", "stopped", "reset")):
+        if any(data.get(key) is False for key in ("success", "ok", "executed", "stopped", "reset", "recovered")):
             raise RuntimeError(f"{name}: {data.get('error') or data.get('message') or data}")
         if name in {self.stop_tool, self.recover_tool} and (
             data.get("error") or data.get("status") in {"failed", "error"}
@@ -116,15 +118,18 @@ class SimpleRobotLoop:
 
     def _recover(self) -> None:
         self.phase = SimplePhase.RECOVERING
-        self.write("[recovering] 中止任务并恢复")
+        self.write("[recovering/stopping] 停止本轮执行")
         stopped = self._call(self.stop_tool, {"execution_id": self.identity["execution_id"]})
         if stopped.get("stopped") is not True:
             raise RuntimeError("stop tool did not acknowledge stop")
         if stopped.get("monitor_cleanup_error"):
             self.write(f"[warning] 机器人已停止，Monitor 清理失败: {stopped['monitor_cleanup_error']}")
-        recovered = self._call(self.recover_tool)
-        if recovered.get("reset") is not True:
-            raise RuntimeError("recovery tool did not acknowledge completed reset")
+        self.write("[recovering] 等待归位，或遥操作调整后切空闲")
+        recovered = self._call(self.recover_tool, {"execution_id": self.identity["execution_id"]})
+        if recovered.get("recovered") is not True and recovered.get("reset") is not True:
+            raise RuntimeError("recovery tool did not acknowledge completed recovery")
+        if recovered.get("recovery_method") == "teleop_adjustment":
+            self.write("[recovering/adjusting] 遥操作调整已结束，已切空闲")
         if recovered.get("completion_basis") == "command_and_delay":
             self.write(f"[recovering] 已等待归位 {recovered.get('wait_s', 0):g} 秒")
         self.identity = {}
@@ -248,7 +253,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--namespace", default="dual_franka")
     parser.add_argument("--poll-interval", type=float, default=None, help="Seconds between monitor calls")
     parser.add_argument("--stop-tool", default="stop_task")
-    parser.add_argument("--recover-tool", default="reset_task")
+    parser.add_argument("--recover-tool", default=None)
     parser.add_argument("--input-source", choices=("terminal", "web"), default=None)
     parser.add_argument("--runtime-url", default=None, help="Robot Runtime URL for web target input")
     args = parser.parse_args(argv)

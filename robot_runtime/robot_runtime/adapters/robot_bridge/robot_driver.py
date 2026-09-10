@@ -203,6 +203,19 @@ class RobotBridgeRobotDriver:
         finally:
             self._finish(token)
 
+    def begin_adjustment(self, *, cancelled=None) -> dict:
+        """Enter teleoperation only after Runtime has stopped the task."""
+        state = self._state(self._scheduler)
+        if "set_mode" not in state["actions"] or "teleop" not in state.get("modes", []):
+            raise ValueError("scheduler does not support teleoperation adjustment")
+        return self._action(self._scheduler, "set_mode", {"mode": "teleop"}, cancelled)
+
+    def end_adjustment(self, *, cancelled=None) -> dict:
+        self._park(self._scheduler, self._robot, cancelled)
+        self._check_cancelled(cancelled)
+        return {"recovered": True, "recovery_method": "teleop_adjustment", "homed": False,
+                "completion_basis": "operator_and_stop_delay", "wait_s": self.stop_delay_s}
+
     def emergency_stop(self) -> dict:
         self.cancel_pending()
         self._park(self._emergency_scheduler, self._emergency_robot)

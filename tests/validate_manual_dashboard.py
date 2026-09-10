@@ -53,6 +53,8 @@ def main():
     parser.add_argument("--driver", choices=["manual", "manual_bridge"], default="manual")
     parser.add_argument("--input-mode", choices=["template", "instruction"], default="template")
     parser.add_argument("--template", default="default")
+    parser.add_argument("--recovery", choices=["homing", "teleop"], default="homing")
+    parser.add_argument("--auto-stop", action="store_true")
     args = parser.parse_args()
     delivery = Path(args.monitor_repo).resolve()
     sys.path.insert(0, str(delivery))
@@ -109,8 +111,9 @@ def main():
     integrated = args.driver == "manual_bridge"
     if integrated:
         from robot_runtime.adapters.manual_bridge.robot_driver import ManualBridgeRobotDriver
-        from test_bridge_adapters import bridge
-        backend, scheduler, robot = bridge(prompt_map={instruction: "pick carrot"})
+        from test_bridge_adapters import bridge, Scheduler
+        backend, scheduler, robot = bridge(Scheduler(takeover=True), prompt_map={instruction: "pick carrot"})
+        scheduler.state["modes"] = ["idle", "teleop", "autonomous"]
         scheduler.state.update(scheduler="SimulatedOpenPiScheduler", iteration=0,
                                latency_step=0, move_steps=2, recording=False, person="")
         scheduler.state["actions"] += ["toggle_recording", "set_person", "step", "adjust_latency", "set_prompt_text"]
@@ -138,7 +141,7 @@ def main():
                 response.update(recording=scheduler.state["recording"], recording_info=dict(scheduler.state["recording_info"]))
             return response
         scheduler.call = scheduler_call
-        driver = ManualBridgeRobotDriver(operator_timeout_s=20, bridge_driver=backend, control_client=scheduler)
+        driver = ManualBridgeRobotDriver(operator_timeout_s=20, auto_stop=args.auto_stop, bridge_driver=backend, control_client=scheduler)
     else:
         driver = ManualRobotDriver(operator_timeout_s=20)
     runtime = RobotRuntime(robot_type="x1pro", robot_driver=driver,
@@ -189,10 +192,15 @@ def main():
                         expect(page.locator("#task-preview")).to_have_text(instruction)
                         page.screenshot(path=args.screenshot.replace(".png", "-input.png"), full_page=True)
                         page.locator("#submit-target").click()
-                        expect(page.locator("#ack")).to_have_text("启动 VLA" if integrated else "已开始", timeout=10000)
+                        start_button = page.locator("#bridge-autonomous" if integrated else "#ack")
+                        expect(start_button).to_be_visible(timeout=10000)
+                        expect(start_button).to_be_enabled(timeout=10000)
+                        if integrated:
+                            expect(page.locator("#ack")).to_be_hidden()
+                            expect(page.locator("#operator-heading")).to_have_text("本轮状态")
                         expect(page.locator("#submit-target")).to_be_disabled()
                         assert httpx.get(runtime_url + "/manual/status").json()["data"]["execution"]["subtask"] == instruction
-                        page.locator("#ack").click()
+                        start_button.click()
                         page.locator("#view-grm").click()
                         expect(page.locator("#note-cam_high")).to_contain_text("97.0%", timeout=10000)
                         expect(page.locator("#note-cam_left_wrist")).to_contain_text("未对这一视角")
@@ -202,12 +210,32 @@ def main():
                         page.wait_for_function(f"{pixel} !== '52,237,181'")
                         page.locator("#show-bbox").check()
                         page.wait_for_function(f"{pixel} === '52,237,181'")
-                        expect(page.locator("#ack")).to_have_text("停止 VLA" if integrated else "已停止", timeout=15000)
-                        page.locator("#ack").click()
-                        expect(page.locator("#ack")).to_have_text("执行归位" if integrated else "已归位")
-                        page.locator("#ack").click()
+                        if integrated:
+                            if not args.auto_stop:
+                                expect(page.locator("#action-title")).to_have_text("等待停止", timeout=15000)
+                                page.locator("#bridge-idle").click()
+                            expect(page.locator("#bridge-home")).to_be_enabled(timeout=15000)
+                            if args.recovery == "teleop":
+                                page.locator("#bridge-teleop").click()
+                                expect(page.locator("#action-title")).to_have_text("调整中")
+                                expect(page.locator("#submit-target")).to_be_disabled()
+                                expect(page.locator("#bridge-teleop")).to_have_attribute("aria-pressed", "true")
+                                page.evaluate("window.scrollTo(0,0)")
+                                page.screenshot(path=args.screenshot.replace(".png", "-adjusting.png"), full_page=True, animations="disabled")
+                                page.reload()
+                                expect(page.locator("#action-title")).to_have_text("调整中")
+                                expect(page.locator("#bridge-idle")).to_be_enabled()
+                                page.locator("#bridge-idle").click()
+                            else:
+                                page.locator("#bridge-home").click()
+                        else:
+                            expect(page.locator("#ack")).to_have_text("已停止", timeout=15000)
+                            page.locator("#ack").click()
+                            expect(page.locator("#ack")).to_have_text("已归位")
+                            page.locator("#ack").click()
                         expect(page.locator("#submit-target")).to_be_enabled()
                         expect(page.locator("#score-status")).to_have_text("任务成功")
+                        page.locator("#view-grm").click()
                         expect(page.locator(".viewport.loaded")).to_have_count(3)
                         stale = httpx.post(runtime_url + "/manual/target", json={"request_id":original_prompt, "target":"cup"})
                         assert stale.status_code == 409 and len(runtime._executions) == 1
@@ -263,15 +291,16 @@ def main():
                                 target.mkdir(parents=True, exist_ok=True)
                                 shutil.copyfile(Path(runtime.recorder.status()["directory"]) / name, target / name)
                             page.set_viewport_size({"width":1440, "height":1000})
-                            page.screenshot(path=args.screenshot, full_page=True)
+                            page.evaluate("window.scrollTo(0,0)")
+                            page.screenshot(path=args.screenshot, full_page=True, animations="disabled")
                             print(f"PASS: Record → {len(recorded)} GRM journal rows → reload → Stop → ZIP {archive_path}")
                         assert not errors, errors
                         if integrated:
                             assert scheduler.state["prompt"] == instruction
                             assert not any(c.get("name") == "set_prompt" for c in scheduler.calls)
-                            assert [c.get("name") for c in scheduler.calls].count("homing") == 1
+                            assert [c.get("name") for c in scheduler.calls].count("homing") == (1 if args.recovery == "homing" else 0)
                             assert scheduler.state["single_step"] and scheduler.state["person"] == "browser-test"
-                            assert len(robot.calls) == 4
+                            assert len(robot.calls) == (4 if args.recovery == "homing" else 6)
                         browser.close()
                     process.send_signal(signal.SIGINT)
                     assert process.wait(8) == 0

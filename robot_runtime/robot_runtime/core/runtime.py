@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import threading
+import logging
 import time
 import math
 from dataclasses import replace
@@ -111,6 +112,11 @@ class RobotRuntime:
         if any(not math.isfinite(v) or v <= 0 for v in (self.reference_timeout, self.max_execution_s)):
             raise ValueError("monitor_ready_timeout_s and max_execution_s must be finite and positive")
         self.recorder = None
+        self._recovery_required = False
+        self._recoveries = {}
+        self._dashboard_stops = set()
+        self._dashboard_threads = []
+        self._emergency_generation = 0
         if recording is not None and recording.get("enabled", True):
             if not hasattr(robot_driver, "scheduler_status"):
                 raise ValueError("progress recording requires the manual_bridge driver")
@@ -157,10 +163,13 @@ class RobotRuntime:
                 raise ValueError("Stop the active execution before starting another")
             if self._resetting:
                 raise ValueError("Wait for reset before starting another execution")
+            if self._recovery_required:
+                raise ValueError("Complete homing or teleoperation adjustment before the next execution")
             self._executions[execution.execution_id] = execution
             self._requests[execution.execution_id] = request
             cancelled = self._cancelled.setdefault(execution.execution_id, threading.Event())
             self._active_execution_id = execution.execution_id
+            self._recovery_required = hasattr(self.robot_driver, "recover")
             self._latest_execution_id = execution.execution_id
             monitor = MonitorState(execution.monitor_id, execution.execution_id, execution.subtask,
                                    subtask_index=execution.subtask_index,
@@ -375,11 +384,45 @@ class RobotRuntime:
                 if self._active_execution_id is not None:
                     raise RuntimeError("Stop the active execution before reset")
                 self._resetting = True
+                emergency_generation = self._emergency_generation
             try:
                 result = self.robot_driver.reset()
                 _check_driver_result(result, "reset")
                 with self._lock:
+                    if emergency_generation != self._emergency_generation:
+                        raise RuntimeError("software stop interrupted recovery")
                     self._estop_latched = False
+                    self._recovery_required = False
+                    self._recoveries[self._latest_execution_id] = {**result, "recovered": True,
+                        "recovery_method": "homing", "homed": True}
+                return result
+            finally:
+                with self._lock:
+                    self._resetting = False
+
+    def recover(self, payload: JsonDict | None = None) -> JsonDict:
+        """Complete the recovery branch without misreporting adjustment as homing."""
+        if not hasattr(self.robot_driver, "recover"):
+            return {**self.reset(), "recovered": True, "recovery_method": "homing", "homed": True}
+        with self._driver_lock:
+            with self._lock:
+                execution_id = (payload or {}).get("execution_id") or self._latest_execution_id
+                if execution_id != self._latest_execution_id or self._active_execution_id is not None:
+                    raise ValueError("Stop the current execution before recovery")
+                if execution_id in self._recoveries and not self._estop_latched:
+                    return deepcopy(self._recoveries[execution_id])
+                self._resetting = True
+                allow_adjustment = not self._estop_latched
+                emergency_generation = self._emergency_generation
+            try:
+                result = self.robot_driver.recover(allow_adjustment=allow_adjustment)
+                _check_driver_result(result, "recovered")
+                with self._lock:
+                    if emergency_generation != self._emergency_generation:
+                        raise RuntimeError("software stop interrupted recovery")
+                    self._recovery_required = False
+                    self._estop_latched = False
+                    self._recoveries[execution_id] = deepcopy(result)
                 return result
             finally:
                 with self._lock:
@@ -388,6 +431,8 @@ class RobotRuntime:
     def emergency_stop(self) -> JsonDict:
         with self._lock:
             self._estop_latched = True
+            self._emergency_generation += 1
+            self._recovery_required = hasattr(self.robot_driver, "recover")
             for cancelled in self._cancelled.values():
                 cancelled.set()
             for timer in self._timers.values():
@@ -435,7 +480,83 @@ class RobotRuntime:
                 "active_execution_id": self._active_execution_id,
                 "resetting": self._resetting,
                 "estop_latched": self._estop_latched,
+                "recovery_required": self._recovery_required,
+                "vla_controls": self.dashboard_lifecycle_controls() if hasattr(self.robot_driver, "recover") else [],
             })
+
+    def dashboard_lifecycle_controls(self) -> list[str]:
+        with self._lock:
+            state = self.robot_driver.status()
+            if state.get("pending"):
+                if self._estop_latched:
+                    return [c for c in state.get("pending_controls", []) if c == "homing"]
+                if state["pending"]["action"] == "execute":
+                    return [*state.get("pending_controls", []), "idle"]
+                return state.get("pending_controls", [])
+            if self._resetting:
+                return []
+            if self._estop_latched:
+                return ["homing"]
+            if self._active_execution_id:
+                return ["idle"]
+            if self._recovery_required:
+                return ["homing"]
+            return []
+
+    def dashboard_lifecycle_action(self, control: str, args: JsonDict) -> JsonDict:
+        # This path must remain available while the worker holds _driver_lock
+        # waiting for an operator choice. Never proxy mode changes directly.
+        if not isinstance(control, str) or control not in {"idle", "teleop", "autonomous", "homing"}:
+            raise ValueError("unsupported VLA control")
+        if "request_id" in args and not isinstance(args["request_id"], str):
+            raise ValueError("request_id must be a string")
+        with self._lock:
+            pending = self.robot_driver.status().get("pending")
+            cancel_start = pending and pending["action"] == "execute" and control == "idle" and args.get("request_id") == pending["request_id"]
+            if args.get("request_id") and not cancel_start:
+                # Driver deduplicates (request, control), including lost replies
+                # retried after completion. Replays cannot affect a newer gate.
+                if self._estop_latched and control != "homing":
+                    raise ValueError("software stop is latched")
+                return self.robot_driver.request_action(args["request_id"], control)
+            if control not in self.dashboard_lifecycle_controls():
+                raise ValueError("VLA control is unavailable in the current loop phase")
+            if pending and not cancel_start:
+                if args.get("request_id") != pending["request_id"]:
+                    raise ValueError("pending request_id is required; refresh the controls")
+                return self.robot_driver.request_action(pending["request_id"], control)
+            execution_id = args.get("execution_id")
+            if execution_id != self._active_execution_id and not (control == "homing" and (self._estop_latched or self._recovery_required)
+                                                                 and execution_id == self._latest_execution_id):
+                raise ValueError("execution_id is stale; refresh the controls")
+            if control == "idle":
+                if execution_id in self._dashboard_stops:
+                    return {"accepted": True, "already_requested": True}
+                self._dashboard_stops.add(execution_id)
+                self.robot_driver.request_stop(execution_id)
+                operation = lambda: self.stop({"execution_id": execution_id})
+            else:
+                # A Home click can arrive before the loop's recovery RPC, or
+                # after that RPC failed. It must not require a second click.
+                self.robot_driver.request_home()
+                operation = lambda: self.recover({"execution_id": execution_id})
+                self._resetting = True
+            emergency_generation = self._emergency_generation
+
+            def run():
+                try:
+                    with self._lock:
+                        if control == "homing" and emergency_generation != self._emergency_generation:
+                            self._resetting = False
+                            return
+                    operation()
+                except Exception:
+                    logging.getLogger(__name__).exception("Dashboard lifecycle control failed")
+            worker = threading.Thread(target=run, daemon=True, name=f"manual-{control}")
+            self._dashboard_threads = [t for t in self._dashboard_threads if t.is_alive()]
+            self._dashboard_threads.append(worker)
+            worker.start()
+            return {"accepted": True, "execution_id": execution_id}
 
     def dashboard_allowed_actions(self) -> list[str]:
         """Ancillary scheduler controls must respect the execution lifecycle."""
@@ -453,6 +574,8 @@ class RobotRuntime:
             return sorted(driver.SETTINGS)
 
     def dashboard_action(self, name: str, args: JsonDict) -> JsonDict:
+        if name in {"set_mode", "homing"}:
+            return self.dashboard_lifecycle_action("homing" if name == "homing" else args.get("mode"), args)
         # A manual handoff holds _driver_lock; reject promptly rather than
         # queueing a stale button behind several minutes of operator waiting.
         if not self._driver_lock.acquire(blocking=False):
@@ -527,7 +650,7 @@ def _check_driver_result(result: JsonDict, acknowledgement: str) -> None:
         result.get(key) is False for key in ("success", "ok")
     ) or result.get("status") in {"failed", "error"}:
         raise RuntimeError(f"driver {acknowledgement} failed or missing acknowledgement: {result}")
-    if acknowledgement == "reset" and (result.get("completed") is False or result.get("status") in {
+    if acknowledgement in {"reset", "recovered"} and (result.get("completed") is False or result.get("status") in {
         "running", "executing", "in_progress", "started",
     }):
         raise RuntimeError("driver reset must acknowledge completion, not just startup")

@@ -135,7 +135,7 @@ def create_app(runtime: RobotRuntime) -> FastAPI:
         if not isinstance(runtime.robot_driver, ManualRobotDriver):
             raise ValueError("manual adapter is not enabled")
         state = runtime.manual_snapshot()
-        if (state["active_execution_id"] or state["resetting"] or state["estop_latched"]
+        if (state["active_execution_id"] or state["resetting"] or state["estop_latched"] or state["recovery_required"]
                 or runtime.robot_driver.status()["pending"]):
             raise ValueError("finish stopping and resetting before entering another target")
 
@@ -285,6 +285,15 @@ def create_app(runtime: RobotRuntime) -> FastAPI:
     def control_reset():
         return _ok(runtime.reset())
 
+    @app.post("/control/recover")
+    def control_recover(body: dict[str, Any] | None = Body(default=None)):
+        try:
+            return _ok(runtime.recover(body))
+        except ValueError as exc:
+            return _fail(str(exc), status=409)
+        except Exception as exc:
+            return _fail(str(exc), status=503)
+
     @app.post("/control/emergency_stop")
     def control_emergency_stop():
         return _ok(runtime.emergency_stop())
@@ -321,6 +330,7 @@ def create_app(runtime: RobotRuntime) -> FastAPI:
                     "POST /monitors/status",
                     "POST /control/stop",
                     "POST /control/reset",
+                    "POST /control/recover",
                     "POST /control/emergency_stop",
                 ],
             }
@@ -346,7 +356,8 @@ def build_runtime_from_config(config: dict[str, Any]) -> RobotRuntime:
             operator_timeout_s=robot_config.get("operator_timeout_s", 300.0))
     elif driver_name in {"robot_bridge", "manual_bridge"}:
         driver_class = ManualBridgeRobotDriver if driver_name == "manual_bridge" else RobotBridgeRobotDriver
-        operator_config = {"operator_timeout_s": robot_config.get("operator_timeout_s", 300.0)} if driver_name == "manual_bridge" else {}
+        operator_config = {"operator_timeout_s": robot_config.get("operator_timeout_s", 300.0),
+                           "auto_stop": robot_config.get("auto_stop", False)} if driver_name == "manual_bridge" else {}
         robot_driver = driver_class(
             **operator_config,
             scheduler_url=robot_config.get("scheduler_url", "ws://127.0.0.1:8088"),

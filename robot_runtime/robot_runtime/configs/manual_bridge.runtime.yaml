@@ -1,8 +1,10 @@
-# Intermediate version: click start/stop/home in /manual to send bridge commands.
+# VLA controls drive loop transitions in /manual.
 robot:
   type: x1pro
   driver: manual_bridge
   operator_timeout_s: 300.0
+  # false: click Idle when the loop requests stop. true: stop automatically.
+  auto_stop: false
   scheduler_url: ws://192.168.10.3:8088
   # scheduler_url: ws://192.168.31.118:8088
   robot_url: ws://127.0.0.1:9946

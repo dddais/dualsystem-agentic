@@ -180,16 +180,16 @@ def main():
                 expect(page.locator("#bridge-record")).to_be_enabled()
 
                 start = pool.submit(runtime.create_execution, {"subtask":"pick cup"})
-                expect(page.locator("#ack")).to_have_text("启动 VLA")
-                no_commands(["r", "p", "3", "h", "s", "a"])
-                with page.expect_response("**/manual/action"):
-                    press("Space")
-                expect(page.locator("#ack")).to_be_disabled()
+                expect(page.locator("#bridge-autonomous")).to_be_enabled()
+                expect(page.locator("#ack")).to_be_hidden()
+                no_commands(["r", "p", "3", "h", "s", "Space"])
+                with page.expect_response("**/manual/bridge/action"):
+                    press("a")
+                expect(page.locator("#bridge-autonomous")).to_be_disabled()
                 no_commands(["Space", "h", "r"])
                 expect(page.locator("#bridge-record")).to_be_enabled()
                 assert start.result(3).driver_result["executed"]
-                for key, mode in [("i","idle"), ("t","teleop"), ("a","autonomous")]:
-                    command(key, "set_mode", {"mode":mode})
+                no_commands(["a", "t"])  # Stop before selecting a recovery branch.
                 command("s", "toggle_single_step")
                 expect(page.locator("#bridge-step")).to_be_enabled()
                 command("Enter", "step")
@@ -224,14 +224,15 @@ def main():
                 assert page.evaluate("document.documentElement.scrollWidth <= innerWidth")
 
                 stop = pool.submit(runtime.stop)
-                expect(page.locator("#ack")).to_have_text("停止 VLA")
-                press("Space")
-                expect(page.locator("#ack")).to_be_hidden()
+                expect(page.locator("#action-title")).to_have_text("等待停止")
+                no_commands(["Space"])
+                press("i")
+                expect(page.locator("#bridge-idle")).to_be_disabled()
                 assert stop.result(3)["stopped"]
                 reset = pool.submit(runtime.reset)
-                expect(page.locator("#ack")).to_have_text("执行归位")
+                expect(page.locator("#bridge-home")).to_be_enabled()
                 press("h")
-                expect(page.locator("#ack")).to_be_hidden()
+                expect(page.locator("#bridge-home")).to_be_disabled()
                 assert reset.result(3)["reset"]
                 assert [call.get("name") for call in scheduler.calls].count("homing") == 1
                 assert not errors, errors

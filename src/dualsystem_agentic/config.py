@@ -104,6 +104,7 @@ class LoggingConfig:
 
 @dataclass
 class SimpleLoopConfig:
+    recover_tool: str = "reset_task"
     instruction_template: str = "pick the {target} and put it on yellow plate"
     instruction_templates: dict[str, str] = field(default_factory=dict)
     default_target: str | None = None

@@ -1,12 +1,12 @@
 # 无 VLM 的键盘循环
 
-只有三个状态：`ready → executing → recovering → ready`。
+顶层有三个状态：`ready → executing → recovering → ready`。
 
 | 状态 | 输入 | 动作与输出 |
 |---|---|---|
 | ready | 输入目标物体名词，或回车复用上一目标 | 模板生成 instruction，调 MCP `execute`；Runtime 等 Monitor 参考帧就绪后调用 driver |
 | executing | execute 的初始状态，随后定期查询的 monitor 状态 | `running/progress` 继续查询；其他状态、错误进入 recovering |
-| recovering | 执行结束或异常 | 依次调用 `stop_task`、`reset_task`，成功后回到 ready |
+| recovering | 执行结束或异常 | 调用 `stop_task` 和配置的恢复工具，归位或调整完成后回到 ready |
 
 不加载 VLM、AgenticRobotLoop、DataLoader 或额外 executor。GRM Monitor 仍由 Robot Runtime 的 `remote_http` provider 接入，并自行采图。这里将用户所说的 `progress` 兼容为现有 Monitor 的 `running`；数值字段 `progress` 只显示，不用于状态分支。success 也会触发中止与恢复。
 
@@ -62,13 +62,16 @@ false。需要每帧都施加干预的实验使用 true，严格模式不接受�
 | execute | `execution_id`、模板生成的 `subtask`、`subtask_index: 0`、`target_queries` | `POST /executions`；返回 execution/monitor ID 和初始状态 |
 | monitor | execution/monitor ID、子任务文本及序号 | `POST /monitors/status` |
 | stop_task | 本轮 `execution_id` | `POST /control/stop`；优先 driver.stop，再清理 Monitor |
-| reset_task | 空对象 | `POST /control/reset`；调用 driver.reset |
+| reset_task | `execution_id`（旧适配器忽略） | `POST /control/reset`；调用 driver.reset |
+| recover_task | 本轮 `execution_id` | `POST /control/recover`；manual_bridge 选择归位或遥操作调整，返回 recovered |
 
 MCP 的 execute 会在创建执行后立即查询一次 Monitor，因此循环直接使用该初始状态，不重复启动 Monitor。后续查询保留 `poll_count/result/error` 等诊断字段并携带 ID，拒绝错配响应。
 
 客户端在发送请求前生成 execution ID；即使 execute 响应丢失，仍能停止对应任务。Runtime 记住提前到达的取消请求，延迟的 execute 不能在 stop 后启动。相同 ID 和请求可幂等重试，内容冲突则拒绝。一个 Runtime 同时只允许一个尚未停止的执行；终态后也应调用 stop 再开始下一任务。旧 ID 的停止请求不会停止新的执行。
 
-恢复映射到 `reset_task`；专用配置显式设置 `DUAL_FRANKA_ENABLE_RESET: "true"`。其他恢复工具可用 `--recover-tool` 替换，但必须返回 `reset: true` 表示恢复完成；停止工具可用 `--stop-tool` 替换，需接受 execution ID 并返回 `stopped: true`。命名空间可用 `--namespace` 指定。
+默认恢复映射到 `reset_task`；manual 配置使用 `simple_loop.recover_tool: recover_task`，
+在 manual_bridge 中等待归位或遥操作调整，在原 manual 中沿用人工归位。
+[状态及控制规范](manual_bridge_lifecycle.md) 说明恢复的两个分支。专用配置显式设置 `DUAL_FRANKA_ENABLE_RESET: "true"`。其他恢复工具可用 `--recover-tool` 替换，但必须返回 `recovered: true` 或兼容的 `reset: true` 表示恢复完成；停止工具可用 `--stop-tool` 替换，需接受 execution ID 并返回 `stopped: true`。命名空间可用 `--namespace` 指定。
 
 启动前检查四个工具是否存在。执行/监控调用失败同样进入 recovering；机器人 stop 失败不继续 reset，stop/reset 任一失败会保留 recovering 状态并退出。Monitor 清理失败单独返回 `monitor_cleanup_error`：机器人仍先停止，loop 显示警告并继续恢复。Runtime 保留本地取消状态，不再发布该会话的远端旧结果。
 

@@ -157,15 +157,15 @@ td:nth-child(n+2), th:nth-child(n+2) { text-align: right; font-variant-numeric: 
 <p id="target-hint" class="hint">正在检查 loop 状态…</p><p id="target-error" class="error" role="alert"></p>
 </section>
 <section class="panel"><div class="panel-top"><h2 id="operator-heading">人工操作</h2><span id="operator-mode" class="muted" style="font-size:12px">原 VLA 控制界面操作</span></div>
-<div class="steps"><span id="step-execute">开始</span><span id="step-stop">停止</span><span id="step-reset">归位</span></div>
+<div class="steps"><span id="step-execute">开始</span><span id="step-stop">停止</span><span id="step-reset">归位 / 调整</span></div>
 <h3 id="action-title">等待任务</h3><p id="instruction" class="instruction">—</p><p id="action-help" class="muted">参考帧准备完成后，这里会提示开始 VLA。</p>
-<div class="toolbar operator-actions"><button id="ack" class="primary" hidden>完成</button><button id="bridge-estop" class="danger" hidden>立即软件停止</button></div>
+<div class="toolbar operator-actions"><button id="ack" class="primary" hidden>完成</button></div>
 <p id="action-error" class="error" role="alert"></p><p id="operator-hint" class="hint">在原有控制界面完成动作后，再点击确认。</p><p id="estop-error" class="error" role="alert"></p><p id="execution-id" class="id"></p>
 <details class="shortcut-help"><summary>键盘快捷键</summary>
-<p><kbd>Space</kbd> 触发本轮操作按钮；原 manual 模式为人工完成确认。</p>
+<p id="manual-space-help"><kbd>Space</kbd> 原 manual 模式：确认人工操作完成。</p>
 <div id="bridge-shortcuts" hidden>
 <p><kbd>R</kbd> 开始 / 停止录制 · <kbd>I</kbd> 空闲 · <kbd>T</kbd> 遥操作 · <kbd>A</kbd> 自主运行</p>
-<p><kbd>S</kbd> 切换单步模式 · <kbd>Enter</kbd> 下一步 · <kbd>H</kbd> 本轮执行归位</p>
+<p><kbd>S</kbd> 切换单步模式 · <kbd>Enter</kbd> 下一步 · <kbd>H</kbd> Homing 归位</p>
 <p><kbd>0–9</kbd> 设置 Phase / Prompt（索引从 0 开始） · <kbd>P</kbd> 切换数字键用途 · <kbd>L</kbd> 锁定 / 解锁 Phase</p>
 <p><kbd>[</kbd> / <kbd>]</kbd> 减少 / 增加 latency_step</p>
 </div>
@@ -175,11 +175,16 @@ td:nth-child(n+2), th:nth-child(n+2) { text-align: right; font-variant-numeric: 
 <div id="bridge-panel" hidden>
 <section class="panel"><div class="panel-top"><h2>VLA 控制</h2><span id="bridge-connection" class="badge">连接 Scheduler…</span></div>
 <p id="bridge-summary" class="muted"></p><p id="bridge-selection" class="hint"></p>
-<p class="hint">开始、停止、归位使用上方本轮操作按钮。模式切换和单步在任务开始后可用；执行期间锁定本轮指令。</p>
-<p id="bridge-error" class="error" role="alert"></p></section>
+<p class="hint">自主运行开始本轮；空闲停止本轮。停止后选择 Homing 归位，或遥操作调整后切空闲，进入下一轮。</p>
+<div class="bridge-row" id="bridge-modes">
+<button id="bridge-idle" data-control="idle" data-mode="idle" data-shortcut="I" aria-keyshortcuts="i">空闲 / 停止</button>
+<button id="bridge-teleop" data-control="teleop" data-mode="teleop" data-shortcut="T" aria-keyshortcuts="t">遥操作 / 调整</button>
+<button id="bridge-autonomous" data-control="autonomous" data-mode="autonomous" data-shortcut="A" aria-keyshortcuts="a">自主运行 / 开始</button>
+<button id="bridge-home" data-control="homing" data-shortcut="H" aria-keyshortcuts="h">Homing / 归位</button>
+<button id="bridge-estop" class="danger" hidden>立即软件停止</button></div>
+<p id="bridge-auto-stop" class="hint"></p><p id="bridge-error" class="error" role="alert"></p></section>
 <div id="bridge-controls">
 <div class="panel bridge-row" data-support-any="set_phase set_prompt"><span id="bridge-digit-status" class="muted"></span><button id="bridge-digit-mode" data-support="toggle_digit_mode" data-action="toggle_digit_mode" data-shortcut="P" aria-keyshortcuts="p">切换数字键用途</button></div>
-<section class="panel" data-support="set_mode"><h2 class="control-heading">模式</h2><div class="bridge-row" id="bridge-modes"></div></section>
 <section class="panel" data-support="toggle_recording"><h2 class="control-heading">录制</h2>
 <div class="bridge-row"><button id="bridge-record" class="danger" data-action="toggle_recording" data-shortcut="R" aria-keyshortcuts="r">开始录制</button><label for="bridge-person">采集人</label><input id="bridge-person" type="text" maxlength="64"><button id="bridge-set-person" data-action="set_person">应用</button></div>
 <p id="progress-recording-status" class="hint" role="status"></p><p id="progress-recording-path" class="id"></p>

@@ -9,7 +9,8 @@
 | 完整指令 | 直接输入整段任务 | `Move the red cup beside the box, then release it.` |
 
 页面预览最终文本；点击“提交任务”后本轮输入锁定。GRM 参考帧就绪后仍需点击
-“启动 VLA”，其余停止、归位和返回 ready 的流程与原 manual_bridge 相同。
+VLA 控制中的“自主运行 / 开始”（A）。空闲（I）结束本轮，随后选择 Homing（H）
+或遥操作调整（T → I），完成后返回 ready。见 [状态规范](manual_bridge_lifecycle.md)。
 文本首尾空白会去掉，内部换行和花括号会保留；完整指令不会再次套用目标模板。
 
 ## 预设模板

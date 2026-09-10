@@ -72,9 +72,9 @@ PYTHONPATH=src python examples/run_simple_robot.py --config examples/config.simp
 
 ## 中间版本：manual_bridge（同页点击控制）
 
-保留 manual 的逐步操作流程，将 robot-bridge 的控制接入 `/manual`。
-每一步点击直接发送命令，成功并完成配置的等待后自动放行 loop，无需切换网页或
-再点击“已开始 / 已停止 / 已归位”。原 `manual` 与自动 `robot_bridge` 仍可独立选择。
+将 robot-bridge 控制接入 `/manual`，以 **VLA 控制**作为唯一的真实操作入口。
+“本轮状态”只读显示 loop 进展，命令成功并完成配置等待后自动推进状态。
+原 `manual` 与自动 `robot_bridge` 仍可独立选择。完整状态规范见 [VLA 控制与 loop](manual_bridge_lifecycle.md)。
 
 在已有 Runtime 环境更新安装，并使用新增配置：
 
@@ -101,23 +101,22 @@ PYTHONPATH=src python examples/run_simple_robot.py \
 只需打开 `http://<Runtime主机>:8767/manual`：
 
 1. ready 时选择模板并填目标，或输入完整 instruction，提交后等待 GRM 起始参考帧。
-2. 点击“启动 VLA”：暂停并清队列、设置本轮 instruction、启动 Scheduler；
+2. 参考帧就绪后点击“自主运行 / 开始”（A），设置本轮 instruction 并启动 Scheduler；
    等 `start_delay_s` 后激活 GRM 评分。
-3. 本轮结束后点击“停止 VLA”：暂停并清理队列，等 `stop_delay_s` 后再次清队列；
-   成功后 loop 提示归位。
-4. 点击“执行归位”：沿用 Scheduler homing，等 `reset_delay_s` 后返回 ready。
+3. 点击“空闲 / 停止”（I），暂停并清队列，等 `stop_delay_s` 后再次清队列，结束本轮 Monitor。
+   可提前结束执行；loop 请求停止时也通过这个按钮处理。`robot.auto_stop: true` 则自动执行这一步。
+4. 停止后选择“Homing / 归位”（H），等 `reset_delay_s` 后返回 ready；或选择“遥操作 / 调整”（T），
+   调整完成后再切空闲（I），停止遥操作并返回 ready。调整分支不发送 homing。
 
-`robot.operator_timeout_s` 只约束等待点击，默认 300 秒。点击立即返回 accepted；
-命令由持有 Runtime 执行锁的原工作线程处理，页面持续显示“执行中”。接口接收点击
-不代表动作已完成，Monitor 激活和 loop 状态切换仍等待 driver 成功返回。
-开始、停止和归位的延时策略与自动 `robot_bridge` 相同，**不代表实测停稳或归位姿态验证**。
+`robot.operator_timeout_s` 约束等待选择和遥操作调整的时长，默认各 300 秒。
+点击立即返回 accepted；后台发送命令并等待，接收点击不代表操作完成。
+开始、停止、归位沿用配置延时，**不代表实测停稳或归位姿态验证**。
 
-页面增加 VLA 控制区，按 Scheduler 能力显示：训练指令、takeover 模式、录制与
-采集人、phase 与锁定、latency_step / move_steps、单步、夹爪映射和四路日志。
-开始／停止／归位通过本轮操作按钮处理；参考帧准备及交接期间禁用辅助控制，
-任务启动后才可切换模式或单步。模式切换／暂停属于本轮执行内的操作，不结束 loop；
-loop 仍根据 Monitor 结果进入停止、归位阶段。执行期间不能换训练 prompt，避免
-VLA 与 GRM 的任务指令不一致。录制、phase 等辅助设置不会放行人工交接。
+页面根据 Scheduler 能力显示训练指令、录制与采集人、Phase 与锁定、
+latency_step / move_steps、单步、夹爪映射和日志。参考帧准备及交接期间禁用辅助控制；
+单步属于执行内部的操作，而空闲会结束本轮任务。执行期间锁定 instruction，
+遥操作只用于停止后的调整。旧 Scheduler 没有 takeover 模式时仍可通过自主 / 空闲
+按钮控制连续运行 / 单步暂停，但无法进入遥操作调整。
 
 新网页支持模板和完整指令，最终 instruction 以同一文本交给 VLA 和 VLM，不经
 `prompt_map` 替换。新增配置使用 `prompt_mode: text`；需要同步更新并重启 Scheduler。
@@ -131,20 +130,20 @@ VLA 与 GRM 的任务指令不一致。录制、phase 等辅助设置不会放�
 
 ### 网页键盘快捷键
 
-`manual_bridge` 沿用 Scheduler 的按键映射，按钮右侧显示快捷键；“本轮操作”下方
+`manual_bridge` 沿用 Scheduler 的按键映射，按钮右侧显示快捷键；“本轮状态”下方
 可展开完整说明。快捷键与点击按钮经过同一套状态检查，只触发当前可用的操作。
 
 | 按键 | 操作 |
 |---|---|
 | `R` | 开始 / 停止录制 |
-| `I` / `T` / `A` | 空闲 / 遥操作 / 自主运行，任务启动后可用 |
+| `I` / `T` / `A` | 停止本轮或结束调整 / 进入调整 / 开始本轮，按 loop 阶段启用 |
 | `S` / `Enter` | 切换单步模式 / 执行下一步；下一步仅在单步模式下可用 |
 | `[` / `]` | 减少 / 增加 `latency_step` |
 | `L` | 锁定 / 解锁 Phase |
 | `P` | 切换 Scheduler 的数字键用途，网页显示当前为 Phase 或 Prompt |
 | `0`–`9` | 设置当前用途对应的 Phase / Prompt，索引从 0 开始 |
-| `Space` | 触发当前“启动 VLA / 停止 VLA / 执行归位”按钮 |
-| `H` | 仅在本轮“执行归位”阶段触发归位 |
+| `Space` | manual_bridge 不设全局操作；原 manual 仍用于人工确认 |
+| `H` | 恢复阶段执行 Homing 归位 |
 
 Record 现支持同步保存 GRM 全量进度、视频关联信息和可下载的 JSONL / CSV。
 保存位置、离线绘图和三端更新要求见 [视频与 GRM 进度录制](manual_recording.md)。
@@ -158,19 +157,19 @@ Record 现支持同步保存 GRM 全量进度、视频关联信息和可下载�
 禁止切换 Prompt。`P` 同步切换 Scheduler 的 `digit_mode`，与 Scheduler UI / 终端
 共享状态。快捷键不会跳过参考帧准备或人工交接，也不会通过 `H` 直接发出裸 homing。
 
-更新运行 Runtime 的机器上的 `dualsystem-agentic`，重启 Runtime 并刷新 `/manual`。
-本次快捷键功能无需更新 robot-bridge、Policy Server 或 Monitor。
+本次控制与恢复改动只需更新 `dualsystem-agentic`，重启 Runtime 和 loop / MCP，刷新 `/manual`。
+无需为本次改动更新 robot-bridge、Policy Server 或 Monitor。
 可用 `python tests/validate_manual_shortcuts.py` 做浏览器回归检查（需 Playwright / Chromium，模拟硬件）。
 
 HTTP 客户端可使用：
 
 | 接口 | 行为 |
 |---|---|
-| `GET /manual/status` | `control_mode: bridge`；`pending.phase` 为 waiting / queued / running，`last_operation` 保存完成结果或错误 |
-| `POST /manual/action` | 提交 `{"request_id":"<本轮待操作ID>"}`，触发该操作；重复 ID 不重发命令，过期／未知 ID 返回 409 |
+| `GET /manual/status` | `control_mode: bridge`；`pending.phase` 为 waiting / queued / running / adjusting；`vla_controls` 给出当前可用的生命周期操作 |
+| `POST /manual/action` | 兼容旧客户端的交接入口；新网页统一使用 `/manual/bridge/action` |
 | `POST /manual/task` | ready 阶段提交模板目标或完整指令，详见自定义指令文档 |
 | `GET /manual/bridge/status` | Scheduler 当前状态、本轮匹配 prompt、Runtime 当前允许的辅助动作 |
-| `POST /manual/bridge/action` | `{"name":"set_phase","args":{"phase":2}}` 等辅助控制；后端检查本轮阶段，禁止绕过交接直接 homing |
+| `POST /manual/bridge/action` | `set_mode` / `homing` 驱动生命周期，需携带当前 request_id 或 execution_id；其他动作按辅助控制检查 |
 | `GET /manual/bridge/log?target=scheduler&lines=200` | scheduler / policy / robot / master 日志，经 Runtime 转发 |
 
 新模式的 `/manual/ack` 返回 409，不能用人工确认绕过真实命令。
