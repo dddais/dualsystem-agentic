@@ -5,7 +5,7 @@
 robot-bridge 控制界面完成，再在 Runtime 人工页面确认。
 
 希望在同一页面直接点击控制 VLA，可使用新增的
-[`manual_bridge` 模式](robot_bridge_adapters.md#中间版本manual_bridge同页点击控制)：
+`manual_bridge` [模式](robot_bridge_adapters.md#中间版本manual_bridge同页点击控制)：
 将下文 Runtime 启动配置换为 `robot_runtime/robot_runtime/configs/manual_bridge.runtime.yaml`，
 配置 Scheduler 控制地址并开启 `--control-port 8088`；其余 Loop、相机与 Monitor 步骤相同。
 该模式下按钮直接发送命令并自动切换阶段。本文其余“已开始／已停止／已归位”说明
@@ -201,6 +201,9 @@ export NO_PROXY=127.0.0.1,localhost
 export no_proxy=$NO_PROXY
 robot-runtime \
   --config robot_runtime/robot_runtime/configs/manual.runtime.yaml \
+  --host 0.0.0.0 --port 8767
+#manual bridge
+robot-runtime --config robot_runtime/robot_runtime/configs/manual_bridge.runtime.yaml \
   --host 0.0.0.0 --port 8767
 ```
 

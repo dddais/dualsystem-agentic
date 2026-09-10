@@ -3,7 +3,8 @@ robot:
   type: x1pro
   driver: manual_bridge
   operator_timeout_s: 300.0
-  scheduler_url: ws://127.0.0.1:8088
+  scheduler_url: ws://192.168.10.3:8088
+  # scheduler_url: ws://192.168.31.118:8088
   robot_url: ws://127.0.0.1:9946
   timeout_s: 5.0
   start_delay_s: 0.5
