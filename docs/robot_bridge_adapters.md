@@ -129,6 +129,36 @@ VLA 与 GRM 的任务指令不一致。录制、phase 等辅助设置不会放�
 启动或归位过程，不需要再次人工确认；停止后锁存，完成归位后才允许下一次执行。
 它与自动 driver 一样是软件停止，`hardware_estop: false`。
 
+### 网页键盘快捷键
+
+`manual_bridge` 沿用 Scheduler 的按键映射，按钮右侧显示快捷键；“本轮操作”下方
+可展开完整说明。快捷键与点击按钮经过同一套状态检查，只触发当前可用的操作。
+
+| 按键 | 操作 |
+|---|---|
+| `R` | 开始 / 停止录制 |
+| `I` / `T` / `A` | 空闲 / 遥操作 / 自主运行，任务启动后可用 |
+| `S` / `Enter` | 切换单步模式 / 执行下一步；下一步仅在单步模式下可用 |
+| `[` / `]` | 减少 / 增加 `latency_step` |
+| `L` | 锁定 / 解锁 Phase |
+| `P` | 切换 Scheduler 的数字键用途，网页显示当前为 Phase 或 Prompt |
+| `0`–`9` | 设置当前用途对应的 Phase / Prompt，索引从 0 开始 |
+| `Space` | 触发当前“启动 VLA / 停止 VLA / 执行归位”按钮 |
+| `H` | 仅在本轮“执行归位”阶段触发归位 |
+
+字母不区分大小写；输入框、下拉框、可编辑区域、中文输入法组合输入期间不响应。
+忽略长按重复和 Ctrl / Alt / Meta 组合键。按钮获得焦点时，Enter / Space 保持
+浏览器原生的按钮操作，不会同时触发全局快捷键。原 `manual` 模式仅使用 Space
+确认本轮人工操作，录制等 Scheduler 快捷键仅在 `manual_bridge` 生效。
+
+数字键使用网页显示的用途，调用明确的 `set_phase` 或 `set_prompt`；执行中仍然
+禁止切换 Prompt。`P` 同步切换 Scheduler 的 `digit_mode`，与 Scheduler UI / 终端
+共享状态。快捷键不会跳过参考帧准备或人工交接，也不会通过 `H` 直接发出裸 homing。
+
+更新运行 Runtime 的机器上的 `dualsystem-agentic`，重启 Runtime 并刷新 `/manual`。
+本次快捷键功能无需更新 robot-bridge、Policy Server 或 Monitor。
+可用 `python tests/validate_manual_shortcuts.py` 做浏览器回归检查（需 Playwright / Chromium，模拟硬件）。
+
 HTTP 客户端可使用：
 
 | 接口 | 行为 |

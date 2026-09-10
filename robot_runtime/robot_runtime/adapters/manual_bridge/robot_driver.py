@@ -26,7 +26,7 @@ class _ControlRequest(_OperatorRequest):
 
 class ManualBridgeRobotDriver(ManualRobotDriver):
     # Lifecycle controls are handled by the runtime, never by a raw proxy.
-    SETTINGS = {"toggle_recording", "set_person", "set_phase", "toggle_phase_lock",
+    SETTINGS = {"toggle_recording", "set_person", "set_phase", "toggle_phase_lock", "toggle_digit_mode",
                 "adjust_latency", "adjust_move_steps", "set_gripper_map", "set_prompt"}
     MOTION = {"set_mode", "toggle_single_step", "step"}
 

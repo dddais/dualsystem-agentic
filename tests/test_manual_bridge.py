@@ -211,6 +211,26 @@ def test_plain_manual_cannot_send_bridge_commands():
         assert client.post("/manual/bridge/action", json={"name": "step"}).status_code == 404
 
 
+def test_digit_mode_switch_respects_handoffs_and_cannot_bypass_prompt_lock():
+    runtime, driver, scheduler, _ = make_stack()
+    scheduler.state["actions"] += ["toggle_digit_mode", "press_digit"]
+    with TestClient(create_app(runtime)) as client, ThreadPoolExecutor() as pool:
+        assert client.post("/manual/bridge/action", json={"name":"toggle_digit_mode"}).status_code == 200
+        # Raw digit dispatch could resolve to a prompt after a concurrent mode
+        # switch. The UI must use the separately guarded set_phase/set_prompt.
+        assert client.post("/manual/bridge/action", json={"name":"press_digit", "args":{"digit":0}}).status_code == 409
+        start = pool.submit(runtime.create_execution, {"subtask":"pick cup"})
+        pending = pending_action(client, "execute")
+        assert client.post("/manual/bridge/action", json={"name":"toggle_digit_mode"}).status_code == 409
+        click(client, pending)
+        assert start.result(3).driver_result["executed"]
+        assert client.post("/manual/bridge/action", json={"name":"toggle_digit_mode"}).status_code == 200
+        for name, args in [("set_prompt", {"index":0}), ("press_digit", {"digit":0})]:
+            assert client.post("/manual/bridge/action", json={"name":name, "args":args}).status_code == 409
+        assert scheduler.state["prompt"] == "pick cup"
+        assert not any(call.get("name") == "press_digit" for call in scheduler.calls)
+
+
 def test_delayed_auxiliary_status_does_not_block_estop_or_resume_after_it():
     runtime, driver, scheduler, _ = make_stack()
     with TestClient(create_app(runtime)) as client, ThreadPoolExecutor() as pool:

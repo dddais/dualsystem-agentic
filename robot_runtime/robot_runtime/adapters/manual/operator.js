@@ -99,6 +99,9 @@ function renderControls() {
   $("operator-mode").textContent = integrated ? "点击直接控制 VLA" : "原 VLA 控制界面操作";
   $("operator-hint").textContent = integrated ? "命令成功并完成配置的等待后，状态自动切换，无需再次确认。" : "在原有控制界面完成动作后，再点击确认。";
   $("bridge-panel").hidden = !integrated;
+  $("bridge-shortcuts").hidden = !integrated;
+  $("ack").dataset.shortcut = integrated && pending?.action === "reset" ? "H / Space" : "Space";
+  $("ack").setAttribute("aria-keyshortcuts", integrated && pending?.action === "reset" ? "h Space" : "Space");
   $("bridge-estop").hidden = !integrated;
   $("bridge-estop").disabled = !connected || sendingEstop;
   if (integrated && status.last_operation && operationId !== status.last_operation.request_id) {
@@ -382,6 +385,9 @@ function renderBridge() {
   for (const group of document.querySelectorAll("[data-support-any]")) {
     group.hidden = !group.dataset.supportAny.split(" ").some(action => supported.includes(action));
   }
+  const digitTarget = bridgeDigitMode() === "phase" ? "Phase" : "Prompt";
+  $("bridge-digit-status").textContent = `数字键 0–9 → ${digitTarget}`
+    + (allowed.includes(digitTarget === "Phase" ? "set_phase" : "set_prompt") ? "" : "（当前不可设置）");
   selectOptions("bridge-prompt", (s.prompts || []).map((prompt, i) => [i, `${i}. ${prompt}`]), (s.prompts || []).indexOf(s.prompt));
   selectOptions("bridge-phase", Array.from({length: 10}, (_, i) => [i, `${i} ${s.phase_labels?.[i] || ""}`]), s.phase);
   const modes = $("bridge-modes");
@@ -390,6 +396,8 @@ function renderBridge() {
       const button = document.createElement("button");
       button.dataset.action = "set_mode"; button.dataset.mode = mode;
       button.textContent = {idle: "空闲", teleop: "遥操作", autonomous: "自主运行"}[mode] || mode;
+      const key = {idle: "i", teleop: "t", autonomous: "a"}[mode];
+      if (key) { button.dataset.shortcut = key.toUpperCase(); button.setAttribute("aria-keyshortcuts", key); }
       return button;
     }));
     modes.dataset.modes = JSON.stringify(s.modes || []);
@@ -439,6 +447,7 @@ $("bridge-controls").addEventListener("click", async event => {
     await request("/manual/bridge/action", {name, args});
     edited.forEach(id => { delete $(id).dataset.dirty; });
     $("bridge-error").textContent = "";
+    await refreshBridgeStatus();
   } catch (error) { $("bridge-error").textContent = error.message; }
   finally { bridgeSending = false; renderBridge(); }
 });
@@ -466,18 +475,73 @@ $("bridge-debug").addEventListener("toggle", refreshBridgeLog);
 $("bridge-log-target").addEventListener("change", refreshBridgeLog);
 $("bridge-refresh-log").addEventListener("click", refreshBridgeLog);
 
-async function pollBridge() {
-  if (connected && status?.control_mode === "bridge") {
-    try {
-      bridgeStatus = await request("/manual/bridge/status");
-      if (!bridgeConnected) $("bridge-error").textContent = "";
-      bridgeConnected = true;
-    } catch (error) {
-      bridgeConnected = false; $("bridge-error").textContent = error.message;
-    }
-    renderControls();
+async function refreshBridgeStatus() {
+  try {
+    bridgeStatus = await request("/manual/bridge/status");
+    if (!bridgeConnected) $("bridge-error").textContent = "";
+    bridgeConnected = true;
+  } catch (error) {
+    bridgeConnected = false; $("bridge-error").textContent = error.message;
   }
+  renderControls();
+}
+async function pollBridge() {
+  if (connected && status?.control_mode === "bridge") await refreshBridgeStatus();
   setTimeout(pollBridge, 1000);
 }
+
+function bridgeDigitMode() {
+  const s = bridgeStatus?.state || {};
+  return s.digit_mode || ((s.actions || []).includes("set_phase") ? "phase" : "prompt");
+}
+
+function shortcutAvailable(button) {
+  return button && !button.disabled && !button.closest("[hidden]") && button.getClientRects().length > 0;
+}
+
+// Use the same buttons and lifecycle gates as mouse clicks. In particular,
+// digits send explicit set_phase/set_prompt, never a raw press_digit that
+// could change the running task's prompt after a scheduler mode switch.
+document.addEventListener("keydown", event => {
+  if (event.defaultPrevented || event.isComposing || event.keyCode === 229
+      || event.ctrlKey || event.metaKey || event.altKey) return;
+  const target = event.target;
+  if (target instanceof Element && (target.isContentEditable
+      || target.closest("input, textarea, select, [role=textbox]"))) return;
+  const key = event.key.toLowerCase();
+  if (event.repeat) {
+    // Native Enter on a focused button also repeats unless its default action
+    // is cancelled. Keep normal held-key typing inside editable fields above.
+    if (key === "enter" || key === " ") event.preventDefault();
+    return;
+  }
+  // Native activation must not also run the global Enter/Space shortcut.
+  if ((key === "enter" || key === " ") && target instanceof Element
+      && target.closest("button, a, summary, [role=button]")) return;
+  let button = null;
+  if (key === " ") button = $("ack");
+  else if (status?.control_mode === "bridge") {
+    if (key === "h" && status.pending?.action === "reset") button = $("ack");
+    else if (/^[0-9]$/.test(key)) {
+      const phase = bridgeDigitMode() === "phase";
+      const select = $(phase ? "bridge-phase" : "bridge-prompt");
+      button = $(phase ? "bridge-set-phase" : "bridge-set-prompt");
+      if (!shortcutAvailable(button) || select.disabled || !Array.from(select.options).some(option => option.value === key)) return;
+      select.value = key; select.dataset.dirty = "true";
+    } else {
+      const selector = {
+        r: "#bridge-record", l: "#bridge-lock", p: "#bridge-digit-mode",
+        s: "#bridge-single-step", enter: "#bridge-step",
+        i: '#bridge-modes [data-mode="idle"]', t: '#bridge-modes [data-mode="teleop"]', a: '#bridge-modes [data-mode="autonomous"]',
+        "[": '#bridge-controls [data-action="adjust_latency"][data-delta="-1"]',
+        "]": '#bridge-controls [data-action="adjust_latency"][data-delta="1"]'
+      }[key];
+      if (selector) button = document.querySelector(selector);
+    }
+  }
+  if (!shortcutAvailable(button)) return;
+  event.preventDefault();
+  button.click();
+});
 setInterval(updateAge,1000);
 pollStatus(); pollCameras(); pollBridge();

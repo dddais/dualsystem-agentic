@@ -52,6 +52,16 @@ button.primary { padding: 12px 22px; font-size: 16px; }
 button.danger { border-color: #ef4444b3; color: #fecaca; }
 button.danger[aria-pressed=true] { background: var(--red); border-color: var(--red); color: #fff; }
 button:disabled, input:disabled, textarea:disabled, select:disabled { opacity: .4; cursor: default; }
+kbd, button[data-shortcut]::after {
+  display: inline-block; margin-left: 8px; padding: 1px 6px; border: 1px solid var(--line);
+  border-radius: 4px; background: #00000040; color: var(--muted);
+  font: 11px/1.6 ui-monospace, Consolas, monospace; vertical-align: 1px;
+}
+button[data-shortcut]::after { content: attr(data-shortcut); }
+button.primary::after, button[aria-pressed=true]::after { color: #dbeafe; border-color: #ffffff59; }
+.shortcut-help { margin-top: 10px; font-size: 12px; color: var(--muted); }
+.shortcut-help p { margin-top: 6px; }
+.shortcut-help kbd { margin-left: 0; }
 input[type=text], input[type=number], textarea, select {
   background: #0d1014; color: var(--ink); border: 1px solid var(--line);
   border-radius: 8px; padding: 9px 10px; max-width: 100%; min-width: 0;
@@ -150,6 +160,16 @@ td:nth-child(n+2), th:nth-child(n+2) { text-align: right; font-variant-numeric: 
 <h3 id="action-title">等待任务</h3><p id="instruction" class="instruction">—</p><p id="action-help" class="muted">参考帧准备完成后，这里会提示开始 VLA。</p>
 <div class="toolbar operator-actions"><button id="ack" class="primary" hidden>完成</button><button id="bridge-estop" class="danger" hidden>立即软件停止</button></div>
 <p id="action-error" class="error" role="alert"></p><p id="operator-hint" class="hint">在原有控制界面完成动作后，再点击确认。</p><p id="estop-error" class="error" role="alert"></p><p id="execution-id" class="id"></p>
+<details class="shortcut-help"><summary>键盘快捷键</summary>
+<p><kbd>Space</kbd> 触发本轮操作按钮；原 manual 模式为人工完成确认。</p>
+<div id="bridge-shortcuts" hidden>
+<p><kbd>R</kbd> 开始 / 停止录制 · <kbd>I</kbd> 空闲 · <kbd>T</kbd> 遥操作 · <kbd>A</kbd> 自主运行</p>
+<p><kbd>S</kbd> 切换单步模式 · <kbd>Enter</kbd> 下一步 · <kbd>H</kbd> 本轮执行归位</p>
+<p><kbd>0–9</kbd> 设置 Phase / Prompt（索引从 0 开始） · <kbd>P</kbd> 切换数字键用途 · <kbd>L</kbd> 锁定 / 解锁 Phase</p>
+<p><kbd>[</kbd> / <kbd>]</kbd> 减少 / 增加 latency_step</p>
+</div>
+<p>仅当前可用按钮响应。输入框、下拉框和中文输入期间不触发快捷键；长按不连发。按钮获得焦点时，Enter / Space 保持该按钮的原生操作。</p>
+</details>
 </section>
 <div id="bridge-panel" hidden>
 <section class="panel"><div class="panel-top"><h2>VLA 控制</h2><span id="bridge-connection" class="badge">连接 Scheduler…</span></div>
@@ -157,20 +177,21 @@ td:nth-child(n+2), th:nth-child(n+2) { text-align: right; font-variant-numeric: 
 <p class="hint">开始、停止、归位使用上方本轮操作按钮。模式切换和单步在任务开始后可用；执行期间锁定本轮指令。</p>
 <p id="bridge-error" class="error" role="alert"></p></section>
 <div id="bridge-controls">
+<div class="panel bridge-row" data-support-any="set_phase set_prompt"><span id="bridge-digit-status" class="muted"></span><button id="bridge-digit-mode" data-support="toggle_digit_mode" data-action="toggle_digit_mode" data-shortcut="P" aria-keyshortcuts="p">切换数字键用途</button></div>
 <section class="panel" data-support="set_mode"><h2 class="control-heading">模式</h2><div class="bridge-row" id="bridge-modes"></div></section>
 <section class="panel" data-support="toggle_recording"><h2 class="control-heading">录制</h2>
-<div class="bridge-row"><button id="bridge-record" class="danger" data-action="toggle_recording">开始录制</button><label for="bridge-person">采集人</label><input id="bridge-person" type="text" maxlength="64"><button id="bridge-set-person" data-action="set_person">应用</button></div></section>
+<div class="bridge-row"><button id="bridge-record" class="danger" data-action="toggle_recording" data-shortcut="R" aria-keyshortcuts="r">开始录制</button><label for="bridge-person">采集人</label><input id="bridge-person" type="text" maxlength="64"><button id="bridge-set-person" data-action="set_person">应用</button></div></section>
 <section class="panel" data-support="set_phase"><h2 class="control-heading">Phase（阶段）</h2>
-<div class="bridge-row"><label for="bridge-phase">Phase</label><select id="bridge-phase"></select><button id="bridge-set-phase" data-action="set_phase">设置阶段</button><button id="bridge-lock" data-action="toggle_phase_lock">锁定 phase</button></div></section>
+<div class="bridge-row"><label for="bridge-phase">Phase</label><select id="bridge-phase"></select><button id="bridge-set-phase" data-action="set_phase">设置阶段</button><button id="bridge-lock" data-action="toggle_phase_lock" data-shortcut="L" aria-keyshortcuts="l">锁定 phase</button></div></section>
 <section class="panel" data-support="set_prompt"><h2 class="control-heading">Prompt（训练指令）</h2>
 <div class="bridge-row"><select id="bridge-prompt" aria-label="训练指令"></select><button id="bridge-set-prompt" data-action="set_prompt">选择</button></div></section>
 <section class="panel" data-support="set_gripper_map"><h2 class="control-heading">Gripper 映射</h2>
 <div class="bridge-row"><label for="bridge-scale">scale</label><input id="bridge-scale" type="number" step="0.1"><label for="bridge-offset">offset</label><input id="bridge-offset" type="number" step="0.1"><button id="bridge-gripper" data-action="set_gripper_map">应用映射</button></div></section>
 <section class="panel" data-support-any="adjust_latency adjust_move_steps toggle_single_step"><h2 class="control-heading">执行控制</h2>
 <div class="execution-controls">
-<div class="bridge-row" data-support="adjust_latency"><span>latency_step</span><button data-action="adjust_latency" data-delta="-1" aria-label="减少 latency_step">−</button><span id="bridge-latency">—</span><button data-action="adjust_latency" data-delta="1" aria-label="增加 latency_step">＋</button></div>
+<div class="bridge-row" data-support="adjust_latency"><span>latency_step</span><button data-action="adjust_latency" data-delta="-1" aria-label="减少 latency_step" data-shortcut="[" aria-keyshortcuts="[">−</button><span id="bridge-latency">—</span><button data-action="adjust_latency" data-delta="1" aria-label="增加 latency_step" data-shortcut="]" aria-keyshortcuts="]">＋</button></div>
 <div class="bridge-row" data-support="adjust_move_steps"><span>move_steps</span><button data-action="adjust_move_steps" data-delta="-1" aria-label="减少 move_steps">−</button><span id="bridge-move">—</span><button data-action="adjust_move_steps" data-delta="1" aria-label="增加 move_steps">＋</button></div>
-<div class="bridge-row" data-support="toggle_single_step"><button id="bridge-single-step" data-action="toggle_single_step">单步模式</button><button id="bridge-step" data-action="step">下一步</button></div>
+<div class="bridge-row" data-support="toggle_single_step"><button id="bridge-single-step" data-action="toggle_single_step" data-shortcut="S" aria-keyshortcuts="s">单步模式</button><button id="bridge-step" data-action="step" data-shortcut="Enter" aria-keyshortcuts="Enter">下一步</button></div>
 </div></section>
 </div>
 <section class="panel"><details id="bridge-debug"><summary>调试 / 运行日志</summary><div class="bridge-row" style="margin-top:12px"><select id="bridge-log-target" aria-label="日志来源"><option>scheduler</option><option>policy</option><option>robot</option><option>master</option></select><button id="bridge-refresh-log">刷新日志</button></div><pre id="bridge-log" class="bridge-log">展开后加载日志。</pre></details></section>
