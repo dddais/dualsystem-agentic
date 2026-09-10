@@ -94,7 +94,7 @@ function renderControls() {
   $("ack").disabled = !connected || sendingAck || busy || (integrated && pending?.action === "execute"
     && (!bridgeConnected || !!bridgeStatus?.selection_error || status.estop_latched));
   if (label) $("ack").textContent = busy ? "执行中…" : label[2];
-  $("runtime-mode").textContent = integrated ? "ROBOT RUNTIME / MANUAL BRIDGE" : "ROBOT RUNTIME / MANUAL";
+  $("runtime-mode").textContent = integrated ? "manual_bridge" : "manual";
   $("operator-heading").textContent = integrated ? "本轮操作" : "人工操作";
   $("operator-mode").textContent = integrated ? "点击直接控制 VLA" : "原 VLA 控制界面操作";
   $("operator-hint").textContent = integrated ? "命令成功并完成配置的等待后，状态自动切换，无需再次确认。" : "在原有控制界面完成动作后，再点击确认。";
@@ -233,9 +233,11 @@ function updateHistory(monitor) {
   }
   const canvas = $("history"), ctx = canvas.getContext("2d"), w = canvas.width, h = canvas.height;
   ctx.clearRect(0, 0, w, h);
-  ctx.strokeStyle = "#e5eded"; ctx.lineWidth = 1;
+  const colors = getComputedStyle(document.documentElement);
+  ctx.strokeStyle = colors.getPropertyValue("--line").trim(); ctx.lineWidth = 1;
   for (const y of [12, h/2, h-12]) { ctx.beginPath(); ctx.moveTo(0,y); ctx.lineTo(w,y); ctx.stroke(); }
-  for (const [key,color] of [["value","#087f80"],["baseline","#b48649"]]) {
+  for (const [key,color] of [["value",colors.getPropertyValue("--accent").trim()],
+                           ["baseline",colors.getPropertyValue("--baseline").trim()]]) {
     if (!history.some(row => typeof row[key] === "number")) continue;
     ctx.strokeStyle = color; ctx.fillStyle = color; ctx.lineWidth = 3; ctx.beginPath();
     history.forEach((row,i) => {
@@ -245,7 +247,7 @@ function updateHistory(monitor) {
     if (history.length === 1) { ctx.beginPath(); ctx.arc(8,h-12-history[0][key]*(h-24),4,0,Math.PI*2); ctx.fill(); }
   }
   $("history-info").textContent = history.length ? `融合进度趋势 · 第 ${history[0].step}–${history.at(-1).step} 次评分`
-    + (history.at(-1).baseline !== undefined ? " · 绿色 Steering / 棕色 Baseline" : "") : "融合进度趋势 · 最近 60 次评分";
+    + (history.at(-1).baseline !== undefined ? " · 蓝色 Steering / 橙色 Baseline" : "") : "融合进度趋势 · 最近 60 次评分";
 }
 
 async function bitmap(path) {
@@ -377,6 +379,9 @@ function renderBridge() {
     ? `本轮启动将使用：${bridgeStatus.selection.index == null ? "" : bridgeStatus.selection.index + ". "}${bridgeStatus.selection.prompt}`
     : "本轮提交的完整指令将在开始时设置到 VLA。");
   for (const row of document.querySelectorAll("[data-support]")) row.hidden = !supported.includes(row.dataset.support);
+  for (const group of document.querySelectorAll("[data-support-any]")) {
+    group.hidden = !group.dataset.supportAny.split(" ").some(action => supported.includes(action));
+  }
   selectOptions("bridge-prompt", (s.prompts || []).map((prompt, i) => [i, `${i}. ${prompt}`]), (s.prompts || []).indexOf(s.prompt));
   selectOptions("bridge-phase", Array.from({length: 10}, (_, i) => [i, `${i} ${s.phase_labels?.[i] || ""}`]), s.phase);
   const modes = $("bridge-modes");
@@ -391,7 +396,9 @@ function renderBridge() {
   }
   for (const button of modes.children) button.setAttribute("aria-pressed", String(button.dataset.mode === s.mode));
   $("bridge-record").textContent = s.recording ? "停止录制（录制中）" : "开始录制";
+  $("bridge-record").setAttribute("aria-pressed", String(!!s.recording));
   $("bridge-lock").textContent = s.phase_locked ? "解锁 phase" : "锁定 phase";
+  $("bridge-lock").setAttribute("aria-pressed", String(!!s.phase_locked));
   $("bridge-latency").textContent = s.latency_step ?? "—";
   $("bridge-move").textContent = s.move_steps ?? "—";
   $("bridge-single-step").textContent = s.single_step ? "切到连续运行" : "切到单步 / 暂停";

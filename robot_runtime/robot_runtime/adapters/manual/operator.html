@@ -5,41 +5,142 @@
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Manual · 机器人操作台</title>
 <style>
-textarea{font:inherit;width:100%;min-height:100px;resize:vertical;border:1px solid #becdd0;border-radius:8px;padding:10px;color:var(--ink)}textarea:disabled{opacity:.48}.task-field{margin-top:12px}.task-field select{width:100%}
-:root{color-scheme:light;--ink:#18303a;--muted:#697d85;--line:#dce5e7;--accent:#087f80;--soft:#eaf5f2;--red:#b63232}
-*{box-sizing:border-box}body{margin:0;background:#f3f6f6;color:var(--ink);font:14px/1.6 system-ui,-apple-system,"Segoe UI",sans-serif}
-header,main{max-width:1560px;margin:auto;padding:24px 32px}header{display:flex;justify-content:space-between;align-items:center;border-bottom:1px solid var(--line)}
-h1,h2,h3,p{margin:0}h1{font-size:24px;font-weight:650;letter-spacing:-.5px}h2{font-size:17px;font-weight:650}h3{font-size:14px}.eyebrow{font-size:11px;letter-spacing:1.6px;color:var(--accent);font-weight:700;margin-bottom:3px}
-.muted,small{color:var(--muted)}.connection{display:flex;gap:9px;align-items:center}.dot{width:8px;height:8px;background:#9aadb2;border-radius:50%}.dot.online{background:#15896a}.dot.offline{background:var(--red)}
-main{display:grid;grid-template-columns:310px minmax(0,1fr);gap:24px;align-items:start}.sidebar,.workspace{display:grid;gap:20px}.panel{background:white;border:1px solid var(--line);border-radius:14px;padding:22px;min-width:0}
-.panel-top{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:18px}.badge{font-size:12px;white-space:nowrap;border-radius:20px;padding:4px 10px;background:var(--soft);color:var(--accent)}
-label{display:block;font-size:13px;margin-bottom:7px}input[type=text]{font:inherit;width:100%;border:1px solid #becdd0;border-radius:8px;padding:11px 12px;background:#fff;color:var(--ink)}
-input:focus,button:focus-visible,select:focus-visible{outline:2px solid #49a9a1;outline-offset:3px}button,select{font:inherit;border:1px solid var(--line);border-radius:8px;padding:9px 13px;background:white;color:var(--ink)}
-button{cursor:pointer}button.primary{background:var(--accent);color:white;border-color:var(--accent);width:100%;padding:12px;font-weight:600}button:disabled,input:disabled{opacity:.48;cursor:not-allowed}
-.instruction{font-size:16px;line-height:1.7;overflow-wrap:anywhere;margin:12px 0 18px}.hint{font-size:12px;color:var(--muted);margin-top:10px}.error{font-size:13px;color:var(--red);overflow-wrap:anywhere}.error:not(:empty){margin-top:10px}
-.task-preview{min-height:44px;margin:10px 0 15px;color:var(--muted);font-size:12px;overflow-wrap:anywhere}.steps{display:flex;gap:7px;margin-bottom:18px}.steps span{flex:1;background:#f1f5f5;border-radius:5px;text-align:center;padding:6px 0;color:var(--muted);font-size:12px}.steps span.current{background:var(--soft);color:var(--accent);font-weight:700}
-.id{font:11px/1.7 ui-monospace,monospace;overflow-wrap:anywhere;margin-top:14px;color:var(--muted)}.toolbar{display:flex;align-items:center;gap:12px;flex-wrap:wrap}.segments{display:flex;background:#f0f4f4;padding:3px;border-radius:9px}.segments button{border:0;background:transparent;color:var(--muted);font-size:13px}.segments button[aria-pressed=true]{background:white;color:var(--ink);box-shadow:0 1px 4px #18303a14}.check{display:flex;gap:6px;align-items:center;margin:0;font-size:12px}.check input{accent-color:var(--accent)}select{padding:6px 8px;font-size:12px}
-.bridge-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px;margin-top:16px}.bridge-row{display:flex;gap:8px;flex-wrap:wrap;align-items:center;min-width:0}.bridge-row[data-support=set_prompt]{grid-column:1/-1}.bridge-row label{margin:0}.bridge-row input{width:140px;max-width:100%}.bridge-row select{max-width:100%;min-width:0}.bridge-row button[aria-pressed=true]{background:var(--soft);border-color:var(--accent)}.bridge-log{white-space:pre-wrap;overflow-wrap:anywhere;max-height:280px;overflow:auto;background:#162b32;color:#d8e9ee;padding:12px;border-radius:8px;font:12px/1.6 monospace}.danger{color:var(--red);border-color:var(--red)}
-.camera-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;margin-top:18px}.camera{min-width:0}.camera-head{display:flex;justify-content:space-between;padding:0 1px 8px;font-size:12px}.camera-head span{font:11px ui-monospace,monospace;color:var(--muted)}.viewport{background:#162b32;border-radius:9px;aspect-ratio:4/3;display:flex;align-items:center;justify-content:center;position:relative;overflow:hidden}.viewport canvas{display:block;width:100%;height:100%;object-fit:contain}.empty-camera{color:#9cb3ba;font-size:12px;position:absolute;pointer-events:none}.viewport.loaded .empty-camera{display:none}.camera-note{font-size:11px;color:var(--muted);min-height:34px;margin-top:8px}
-.score-layout{display:grid;grid-template-columns:190px minmax(0,1fr);gap:28px}.big-score{font-size:48px;line-height:1.3;font-variant-numeric:tabular-nums;letter-spacing:-2px;color:var(--accent)}.meter{height:6px;border-radius:9px;background:#e8f0f0;margin:10px 0 13px;overflow:hidden}.meter div{height:100%;background:var(--accent);transition:width .2s}.branches{font-size:12px;color:var(--muted);margin-top:12px}.branches strong{color:var(--ink);font-variant-numeric:tabular-nums}table{border-collapse:collapse;width:100%;font-size:13px;text-align:left}th{font-weight:500;color:var(--muted);font-size:12px}td,th{padding:8px 6px;border-bottom:1px solid #edf1f2}td:nth-child(n+2),th:nth-child(n+2){text-align:right;font-variant-numeric:tabular-nums}.chart{width:100%;height:95px;display:block;margin-top:16px}.footer-note{margin-top:12px;font-size:12px;color:var(--muted)}[hidden]{display:none!important}
-@media(max-width:1100px){header,main{padding:20px}main{grid-template-columns:260px minmax(0,1fr);gap:16px}.panel{padding:17px}.panel-top{align-items:flex-start;flex-wrap:wrap}.camera-grid{gap:8px}.camera-head span{display:none}.score-layout{grid-template-columns:140px minmax(0,1fr);gap:15px}.big-score{font-size:39px}}
-@media(max-width:780px){main{grid-template-columns:1fr}.sidebar{grid-template-columns:1fr 1fr;gap:12px}.camera-grid{grid-template-columns:1fr}.camera-head span{display:block}.viewport{aspect-ratio:16/10}.camera-note{min-height:0;margin-bottom:8px}.connection{font-size:12px}h1{font-size:20px}.score-layout{grid-template-columns:1fr}.sidebar .panel{min-width:0}}
-@media(max-width:480px){.sidebar{grid-template-columns:1fr}header,main{padding:15px}.toolbar{gap:8px}}
-@media(max-width:1100px){.bridge-grid{grid-template-columns:1fr}}
+:root {
+  color-scheme: dark;
+  --bg: #14171c; --panel: #1d2229; --line: #2c333d;
+  --ink: #d8dee6; --muted: #7d8794; --accent: #3b82f6;
+  --ok: #22c55e; --baseline: #f59e0b; --red: #ef4444;
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0; background: var(--bg); color: var(--ink);
+  font: 15px/1.6 "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+}
+h1, h2, h3, p { margin: 0; }
+header {
+  display: flex; align-items: center; flex-wrap: wrap; gap: 12px;
+  padding: 10px 16px; background: var(--panel); border-bottom: 1px solid var(--line);
+  position: sticky; top: 0; z-index: 10;
+}
+header h1 { font-size: 16px; font-weight: 600; }
+.meta, .connection { font-size: 13px; color: var(--muted); }
+.connection { margin-left: auto; }
+.dot { width: 10px; height: 10px; flex: 0 0 10px; border-radius: 50%; background: var(--red); }
+.dot.online { background: var(--ok); }
+.dot.offline { background: var(--red); }
+main { max-width: 900px; padding: 16px; margin: 0 auto; }
+.panel {
+  background: var(--panel); border: 1px solid var(--line);
+  border-radius: 10px; padding: 14px 16px; margin-bottom: 14px; min-width: 0;
+}
+h2 { font-size: 13px; color: var(--muted); font-weight: 600; letter-spacing: .05em; }
+h3 { font-size: 14px; font-weight: 600; }
+.panel-top { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 10px; margin-bottom: 10px; }
+.control-heading { margin-bottom: 10px; }
+.muted, small { color: var(--muted); }
+.badge { font-size: 12px; color: #93c5fd; background: #1e304b; padding: 2px 8px; border-radius: 5px; }
+button, input, textarea, select { font: inherit; }
+button {
+  background: #262d37; color: var(--ink); border: 1px solid var(--line);
+  border-radius: 8px; padding: 10px 16px; cursor: pointer; transition: background .1s;
+}
+button:hover:not(:disabled) { background: #303945; }
+button:active:not(:disabled) { transform: translateY(1px); }
+button.primary, button[aria-pressed=true] { background: var(--accent); border-color: var(--accent); color: #fff; }
+button.primary:hover:not(:disabled), button[aria-pressed=true]:hover:not(:disabled) { background: #2563eb; }
+button.primary { padding: 12px 22px; font-size: 16px; }
+button.danger { border-color: #ef4444b3; color: #fecaca; }
+button.danger[aria-pressed=true] { background: var(--red); border-color: var(--red); color: #fff; }
+button:disabled, input:disabled, textarea:disabled, select:disabled { opacity: .4; cursor: default; }
+input[type=text], input[type=number], textarea, select {
+  background: #0d1014; color: var(--ink); border: 1px solid var(--line);
+  border-radius: 8px; padding: 9px 10px; max-width: 100%; min-width: 0;
+}
+input:focus, textarea:focus, select:focus { outline: none; border-color: var(--accent); }
+button:focus-visible, summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+input::placeholder, textarea::placeholder { color: var(--muted); opacity: 1; }
+label { display: block; color: var(--muted); font-size: 13px; margin-bottom: 6px; }
+textarea { display: block; width: 100%; min-height: 100px; resize: vertical; }
+.task-field { margin-top: 12px; min-width: 0; }
+.task-field input, .task-field select { width: 100%; }
+#template-fields { display: flex; flex-wrap: wrap; gap: 12px; }
+#template-fields .task-field { flex: 1 1 240px; }
+#instruction-fields { display: grid; grid-template-columns: minmax(0, 2fr) minmax(0, 1fr); gap: 12px; }
+#target-queries { min-height: 100px; }
+.task-preview { background: #0d1014; border-left: 2px solid var(--accent); padding: 10px 12px; margin: 12px 0; font-size: 13px; white-space: pre-wrap; overflow-wrap: anywhere; }
+.instruction { font-size: 16px; white-space: pre-wrap; overflow-wrap: anywhere; margin: 8px 0; }
+.hint, .footer-note { font-size: 12px; color: var(--muted); margin-top: 8px; }
+.error { font-size: 13px; color: #fca5a5; overflow-wrap: anywhere; }
+.error:not(:empty) { margin-top: 8px; }
+.steps { display: flex; gap: 8px; margin-bottom: 12px; }
+.steps span { border: 1px solid var(--line); border-radius: 6px; padding: 4px 16px; color: var(--muted); font-size: 13px; }
+.steps span.current { background: var(--accent); border-color: var(--accent); color: #fff; }
+.id { font: 11px/1.6 ui-monospace, Consolas, monospace; color: var(--muted); overflow-wrap: anywhere; margin-top: 8px; }
+.toolbar, .bridge-row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; min-width: 0; }
+.operator-actions { margin-top: 12px; }
+.segments { display: flex; flex-wrap: wrap; gap: 6px; }
+.segments button { padding: 8px 12px; font-size: 13px; }
+.check { display: flex; align-items: center; gap: 6px; margin: 0; font-size: 12px; }
+.check input { accent-color: var(--accent); }
+.bridge-row label { margin: 0; }
+.bridge-row input[type=text] { width: 160px; }
+.bridge-row input[type=number] { width: 90px; }
+.bridge-row select { flex: 0 1 auto; }
+#bridge-prompt { flex: 1 1 280px; }
+.execution-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 12px 24px; }
+.execution-controls .bridge-row > span:first-child { font-size: 13px; color: var(--muted); }
+#bridge-latency, #bridge-move { min-width: 2ch; text-align: center; font-variant-numeric: tabular-nums; }
+#bridge-record[aria-pressed=true] { animation: recording-pulse 1.2s infinite; }
+@keyframes recording-pulse { 50% { opacity: .65; } }
+@media(prefers-reduced-motion:reduce) { #bridge-record[aria-pressed=true] { animation: none; } }
+summary { cursor: pointer; color: var(--muted); font-size: 13px; }
+.bridge-log { margin: 10px 0 0; height: 280px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; background: #0d1014; color: #b6c2cf; border: 1px solid var(--line); border-radius: 8px; padding: 10px; font: 12px/1.5 ui-monospace, Consolas, monospace; }
+.camera-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; margin-top: 12px; }
+.camera { min-width: 0; }
+.camera-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 4px; padding-bottom: 6px; }
+.camera-head span { font: 10px ui-monospace, Consolas, monospace; color: var(--muted); }
+.viewport { background: #0d1014; border-radius: 8px; aspect-ratio: 4/3; display: flex; align-items: center; justify-content: center; position: relative; overflow: hidden; }
+.viewport canvas { display: block; width: 100%; height: 100%; object-fit: contain; }
+.empty-camera { position: absolute; color: var(--muted); font-size: 12px; pointer-events: none; }
+.viewport.loaded .empty-camera { display: none; }
+.camera-note { font-size: 11px; color: var(--muted); margin-top: 6px; }
+.score-layout { display: grid; grid-template-columns: 160px minmax(0, 1fr); gap: 24px; }
+.big-score { color: #60a5fa; font-size: 42px; font-variant-numeric: tabular-nums; line-height: 1.3; }
+.meter { height: 6px; border-radius: 6px; background: var(--line); overflow: hidden; margin: 10px 0; }
+.meter div { height: 100%; background: var(--accent); transition: width .2s; }
+.branches { font-size: 12px; color: var(--muted); margin-top: 10px; }
+.branches strong { color: var(--ink); }
+table { width: 100%; border-collapse: collapse; font-size: 13px; text-align: left; }
+th { color: var(--muted); font-weight: 500; font-size: 12px; }
+td, th { padding: 7px 6px; border-bottom: 1px solid var(--line); }
+td:nth-child(n+2), th:nth-child(n+2) { text-align: right; font-variant-numeric: tabular-nums; }
+.chart { display: block; width: 100%; height: 95px; margin-top: 12px; }
+[hidden] { display: none !important; }
+@media(max-width:620px) {
+  #instruction-fields, .camera-grid, .score-layout { grid-template-columns: 1fr; }
+  .camera-grid, .score-layout { gap: 16px; }
+  .panel-top { align-items: flex-start; }
+  .toolbar select { max-width: 100%; }
+}
+@media(max-width:400px) {
+  header { gap: 8px; padding: 10px 12px; }
+  main { padding: 12px; }
+  .panel { padding: 12px; }
+  .connection { flex-basis: 100%; margin-left: 18px; }
+}
 </style>
 <script src="/manual/app.js" defer></script>
 </head>
 <body>
-<header><div><div class="eyebrow" id="runtime-mode">ROBOT RUNTIME / MANUAL</div><h1>机器人操作台</h1></div><div class="connection" role="status"><span id="connection-dot" class="dot"></span><span id="connection">正在连接</span></div></header>
+<header><span id="connection-dot" class="dot" aria-hidden="true"></span><h1>机器人操作台</h1><span id="runtime-mode" class="meta">manual</span><span id="connection" class="connection" role="status">正在连接</span></header>
 <main>
-<aside class="sidebar">
 <section class="panel"><div class="panel-top"><h2>目标任务</h2><span class="badge" id="phase">等待连接</span></div>
 <form id="target-form">
 <div id="input-modes" class="segments" aria-label="任务输入方式" hidden><button id="mode-template" type="button" aria-pressed="true">模板填目标</button><button id="mode-instruction" type="button" aria-pressed="false">完整指令</button></div>
 <div id="template-fields"><div id="template-choice" class="task-field" hidden><label for="instruction-template">预设模板</label><select id="instruction-template" disabled></select></div>
 <div class="task-field"><label for="target">目标物体</label><input id="target" type="text" maxlength="200" placeholder="例如 carrot / white cube" autocomplete="off" disabled></div></div>
 <div id="instruction-fields" hidden><div class="task-field"><label for="full-instruction">完整 instruction</label><textarea id="full-instruction" maxlength="2000" placeholder="例如 Pick up the red cup and place it beside the box." disabled></textarea></div>
-<div class="task-field"><label for="target-queries">SAM3 检测目标（可选，每行一个）</label><textarea id="target-queries" style="min-height:64px" maxlength="1607" placeholder="red cup" disabled></textarea><p class="hint">复杂或中文指令建议填写英文物体名；留空时由 Monitor 按现有规则提取。</p></div></div>
+<div class="task-field"><label for="target-queries">SAM3 检测目标（可选，每行一个）</label><textarea id="target-queries" maxlength="1607" placeholder="red cup" disabled></textarea><p class="hint">复杂或中文指令建议填写英文物体名；留空时由 Monitor 按现有规则提取。</p></div></div>
 <p id="instruction-destination" class="hint" hidden>最终指令将同时发送给 VLA 和 VLM Monitor。</p>
 <p id="task-preview" class="task-preview">Loop 进入 ready 后，可在这里提交目标。</p><button id="submit-target" class="primary" type="submit" disabled>提交目标</button></form>
 <p id="target-hint" class="hint">正在检查 loop 状态…</p><p id="target-error" class="error" role="alert"></p>
@@ -47,29 +148,33 @@ button{cursor:pointer}button.primary{background:var(--accent);color:white;border
 <section class="panel"><div class="panel-top"><h2 id="operator-heading">人工操作</h2><span id="operator-mode" class="muted" style="font-size:12px">原 VLA 控制界面操作</span></div>
 <div class="steps"><span id="step-execute">开始</span><span id="step-stop">停止</span><span id="step-reset">归位</span></div>
 <h3 id="action-title">等待任务</h3><p id="instruction" class="instruction">—</p><p id="action-help" class="muted">参考帧准备完成后，这里会提示开始 VLA。</p>
-<button id="ack" class="primary" style="margin-top:18px" hidden>完成</button><p id="action-error" class="error" role="alert"></p>
-<p id="operator-hint" class="hint">在原有控制界面完成动作后，再点击确认。</p>
-<button id="bridge-estop" class="danger" style="margin-top:12px" hidden>立即软件停止</button><p id="estop-error" class="error" role="alert"></p><p id="execution-id" class="id"></p>
+<div class="toolbar operator-actions"><button id="ack" class="primary" hidden>完成</button><button id="bridge-estop" class="danger" hidden>立即软件停止</button></div>
+<p id="action-error" class="error" role="alert"></p><p id="operator-hint" class="hint">在原有控制界面完成动作后，再点击确认。</p><p id="estop-error" class="error" role="alert"></p><p id="execution-id" class="id"></p>
 </section>
-</aside>
-<div class="workspace">
-<section id="bridge-panel" class="panel" hidden>
-<div class="panel-top"><h2>VLA 控制</h2><span id="bridge-connection" class="badge">连接 Scheduler…</span></div>
+<div id="bridge-panel" hidden>
+<section class="panel"><div class="panel-top"><h2>VLA 控制</h2><span id="bridge-connection" class="badge">连接 Scheduler…</span></div>
 <p id="bridge-summary" class="muted"></p><p id="bridge-selection" class="hint"></p>
-<div id="bridge-controls" class="bridge-grid">
-<div class="bridge-row" data-support="set_prompt"><label for="bridge-prompt">训练指令</label><select id="bridge-prompt"></select><button id="bridge-set-prompt" data-action="set_prompt">选择</button></div>
-<div class="bridge-row" id="bridge-modes" data-support="set_mode"></div>
-<div class="bridge-row" data-support="toggle_recording"><button id="bridge-record" data-action="toggle_recording">开始录制</button><label for="bridge-person">采集人</label><input id="bridge-person" type="text" maxlength="64"><button id="bridge-set-person" data-action="set_person">应用</button></div>
-<div class="bridge-row" data-support="set_phase"><label for="bridge-phase">Phase</label><select id="bridge-phase"></select><button id="bridge-set-phase" data-action="set_phase">设置阶段</button><button id="bridge-lock" data-action="toggle_phase_lock">锁定 phase</button></div>
-<div class="bridge-row" data-support="adjust_latency"><span>latency_step</span><button data-action="adjust_latency" data-delta="-1">−</button><span id="bridge-latency">—</span><button data-action="adjust_latency" data-delta="1">＋</button></div>
-<div class="bridge-row" data-support="adjust_move_steps"><span>move_steps</span><button data-action="adjust_move_steps" data-delta="-1">−</button><span id="bridge-move">—</span><button data-action="adjust_move_steps" data-delta="1">＋</button></div>
+<p class="hint">开始、停止、归位使用上方本轮操作按钮。模式切换和单步在任务开始后可用；执行期间锁定本轮指令。</p>
+<p id="bridge-error" class="error" role="alert"></p></section>
+<div id="bridge-controls">
+<section class="panel" data-support="set_mode"><h2 class="control-heading">模式</h2><div class="bridge-row" id="bridge-modes"></div></section>
+<section class="panel" data-support="toggle_recording"><h2 class="control-heading">录制</h2>
+<div class="bridge-row"><button id="bridge-record" class="danger" data-action="toggle_recording">开始录制</button><label for="bridge-person">采集人</label><input id="bridge-person" type="text" maxlength="64"><button id="bridge-set-person" data-action="set_person">应用</button></div></section>
+<section class="panel" data-support="set_phase"><h2 class="control-heading">Phase（阶段）</h2>
+<div class="bridge-row"><label for="bridge-phase">Phase</label><select id="bridge-phase"></select><button id="bridge-set-phase" data-action="set_phase">设置阶段</button><button id="bridge-lock" data-action="toggle_phase_lock">锁定 phase</button></div></section>
+<section class="panel" data-support="set_prompt"><h2 class="control-heading">Prompt（训练指令）</h2>
+<div class="bridge-row"><select id="bridge-prompt" aria-label="训练指令"></select><button id="bridge-set-prompt" data-action="set_prompt">选择</button></div></section>
+<section class="panel" data-support="set_gripper_map"><h2 class="control-heading">Gripper 映射</h2>
+<div class="bridge-row"><label for="bridge-scale">scale</label><input id="bridge-scale" type="number" step="0.1"><label for="bridge-offset">offset</label><input id="bridge-offset" type="number" step="0.1"><button id="bridge-gripper" data-action="set_gripper_map">应用映射</button></div></section>
+<section class="panel" data-support-any="adjust_latency adjust_move_steps toggle_single_step"><h2 class="control-heading">执行控制</h2>
+<div class="execution-controls">
+<div class="bridge-row" data-support="adjust_latency"><span>latency_step</span><button data-action="adjust_latency" data-delta="-1" aria-label="减少 latency_step">−</button><span id="bridge-latency">—</span><button data-action="adjust_latency" data-delta="1" aria-label="增加 latency_step">＋</button></div>
+<div class="bridge-row" data-support="adjust_move_steps"><span>move_steps</span><button data-action="adjust_move_steps" data-delta="-1" aria-label="减少 move_steps">−</button><span id="bridge-move">—</span><button data-action="adjust_move_steps" data-delta="1" aria-label="增加 move_steps">＋</button></div>
 <div class="bridge-row" data-support="toggle_single_step"><button id="bridge-single-step" data-action="toggle_single_step">单步模式</button><button id="bridge-step" data-action="step">下一步</button></div>
-<div class="bridge-row" data-support="set_gripper_map"><label for="bridge-scale">夹爪 scale</label><input id="bridge-scale" type="number" step="0.1"><label for="bridge-offset">offset</label><input id="bridge-offset" type="number" step="0.1"><button id="bridge-gripper" data-action="set_gripper_map">应用映射</button></div>
+</div></section>
 </div>
-<p class="hint">开始、停止、归位使用左侧本轮操作按钮。模式切换和单步在任务开始后可用；执行期间锁定本轮指令。</p>
-<p id="bridge-error" class="error" role="alert"></p>
-<details id="bridge-debug" style="margin-top:16px"><summary>运行日志</summary><div class="bridge-row" style="margin-top:12px"><select id="bridge-log-target" aria-label="日志来源"><option>scheduler</option><option>policy</option><option>robot</option><option>master</option></select><button id="bridge-refresh-log">刷新日志</button></div><pre id="bridge-log" class="bridge-log">展开后加载日志。</pre></details>
-</section>
+<section class="panel"><details id="bridge-debug"><summary>调试 / 运行日志</summary><div class="bridge-row" style="margin-top:12px"><select id="bridge-log-target" aria-label="日志来源"><option>scheduler</option><option>policy</option><option>robot</option><option>master</option></select><button id="bridge-refresh-log">刷新日志</button></div><pre id="bridge-log" class="bridge-log">展开后加载日志。</pre></details></section>
+</div>
 <section class="panel"><div class="panel-top"><h2>三视角画面</h2><div class="toolbar">
 <div class="segments" aria-label="画面来源"><button id="view-live" type="button" aria-pressed="true">实时画面</button><button id="view-grm" type="button" aria-pressed="false">GRM 评分画面</button></div>
 <label class="check"><input id="show-bbox" type="checkbox" checked disabled>SAM3 bbox</label><select id="bbox-mode" aria-label="bbox 对应评分模式" disabled><option value="forward">forward</option><option value="incremental">incremental</option><option value="backward">backward</option></select>
@@ -85,7 +190,6 @@ button{cursor:pointer}button.primary{background:var(--accent);color:white;border
 <div><table><thead><tr><th>模式</th><th>本轮原始 score</th><th>累计进度</th></tr></thead><tbody id="mode-scores"><tr><td colspan="3" class="muted">暂无评分</td></tr></tbody></table><canvas id="history" class="chart" width="900" height="160" aria-label="最近 60 次评分的融合进度趋势"></canvas><p id="history-info" class="hint">融合进度趋势 · 最近 60 次评分</p></div></div>
 <p id="monitor-error" class="error" role="alert"></p><p class="footer-note">bbox 是界面叠加标注；模型接收原图，并使用检测区域调整 attention。评分画面展示该轮输入的当前三视角。</p>
 </section>
-</div>
 </main>
 </body>
 </html>
