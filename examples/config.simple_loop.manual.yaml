@@ -23,7 +23,7 @@ simple_loop:
   instruction_template: "pick the {target} and put it into the box"
   # Additional templates shown in /manual; each contains only {target}.
   instruction_templates:
-    放到盘子上: "pick the {target} and put it on the plate"
+    放到杯子里: "pick the {target} and put it into the cup"
     放到盒子里: "pick the {target} and put it into the box"
   default_target: null
   first_result_timeout_s: 120.0
