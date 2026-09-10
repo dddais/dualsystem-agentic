@@ -307,7 +307,7 @@ def test_manual_and_bridge_configs_build_without_connecting():
     from pathlib import Path
     from robot_runtime.api.app import build_runtime_from_config, load_runtime_config
     root = Path(__file__).resolve().parents[1] / "robot_runtime/robot_runtime/configs"
-    for name in ("manual", "robot_bridge"):
+    for name in ("manual", "manual_bridge", "robot_bridge"):
         runtime = build_runtime_from_config(load_runtime_config(root / f"{name}.runtime.yaml"))
         assert runtime.robot_driver.capabilities()["driver"] == name
         assert runtime.camera_provider.health()["provider"] == "robot_bridge"

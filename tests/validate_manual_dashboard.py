@@ -46,6 +46,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--monitor-repo", default=str(ROOT.parent / "Robo-Dopamine-delivery"))
     parser.add_argument("--screenshot", default="/tmp/manual-dashboard.png")
+    parser.add_argument("--driver", choices=["manual", "manual_bridge"], default="manual")
     args = parser.parse_args()
     delivery = Path(args.monitor_repo).resolve()
     sys.path.insert(0, str(delivery))
@@ -94,7 +95,28 @@ def main():
                             "selected": {"bbox": [70,50,250,190], "query": "carrot", "score": .97}}}}})
             return results
 
-    driver = ManualRobotDriver(operator_timeout_s=20)
+    integrated = args.driver == "manual_bridge"
+    if integrated:
+        from robot_runtime.adapters.manual_bridge.robot_driver import ManualBridgeRobotDriver
+        from test_bridge_adapters import bridge
+        backend, scheduler, robot = bridge(prompt_map={instruction: "pick carrot"})
+        scheduler.state.update(scheduler="SimulatedOpenPiScheduler", iteration=0,
+                               latency_step=0, move_steps=2, recording=False, person="")
+        scheduler.state["actions"] += ["toggle_recording", "set_person", "step", "adjust_latency"]
+        original_call = scheduler.call
+        def scheduler_call(request):
+            name = request.get("name")
+            if name == "toggle_recording":
+                scheduler.state["recording"] = not scheduler.state["recording"]
+            elif name == "set_person":
+                scheduler.state["person"] = request["args"]["person"]
+            elif name == "adjust_latency":
+                scheduler.state["latency_step"] += request["args"]["delta"]
+            return original_call(request)
+        scheduler.call = scheduler_call
+        driver = ManualBridgeRobotDriver(operator_timeout_s=20, bridge_driver=backend, control_client=scheduler)
+    else:
+        driver = ManualRobotDriver(operator_timeout_s=20)
     runtime = RobotRuntime(robot_type="x1pro", robot_driver=driver,
         camera_provider=RobotBridgeCameraProvider(client=SimulatedCamera(), cache_s=.05),
         monitor_provider=LocalMemoryMonitorProvider(), safety={"max_execution_s":30})
@@ -106,6 +128,7 @@ def main():
         with serve(monitor_app(backend)) as monitor_url, tempfile.TemporaryFile(mode="w+") as log:
             runtime.monitor_provider = RemoteHTTPMonitorProvider(url=monitor_url, timeout=3)
             env = {**os.environ, "PATH": str(Path(sys.executable).parent) + os.pathsep + os.environ["PATH"],
+                   "PYTHONPATH": str(ROOT / "src") + os.pathsep + os.environ.get("PYTHONPATH", ""),
                    "DUAL_FRANKA_RUNTIME_URL": runtime_url, "PYTHONUNBUFFERED": "1"}
             process = subprocess.Popen([sys.executable, "examples/run_simple_robot.py", "--config",
                 "examples/config.simple_loop.manual.yaml", "--input-source", "web", "--poll-interval", ".2"],
@@ -119,15 +142,22 @@ def main():
                     page.goto(runtime_url + "/manual")
                     expect(page.locator("#submit-target")).to_be_enabled(timeout=10000)
                     expect(page.locator(".viewport.loaded")).to_have_count(3)
+                    if integrated:
+                        expect(page.locator("#bridge-connection")).to_have_text("Scheduler 已连接")
+                        expect(page.locator("#bridge-single-step")).to_be_disabled()
+                        page.locator("#bridge-record").click()
+                        expect(page.locator("#bridge-record")).to_have_text("停止录制（录制中）")
+                        page.locator("#bridge-person").fill("browser-test")
+                        page.locator("#bridge-set-person").click()
                     original_prompt = httpx.get(runtime_url + "/manual/status").json()["data"]["input"]["request_id"]
                     page.locator("#target").fill("carrot")
                     expect(page.locator("#task-preview")).to_have_text(instruction)
                     page.locator("#submit-target").click()
-                    expect(page.locator("#ack")).to_have_text("已开始", timeout=10000)
+                    expect(page.locator("#ack")).to_have_text("启动 VLA" if integrated else "已开始", timeout=10000)
                     expect(page.locator("#submit-target")).to_be_disabled()
                     page.locator("#ack").click()
                     page.locator("#view-grm").click()
-                    expect(page.locator("#note-cam_high")).to_contain_text("SAM3 97.0%", timeout=10000)
+                    expect(page.locator("#note-cam_high")).to_contain_text("97.0%", timeout=10000)
                     expect(page.locator("#note-cam_left_wrist")).to_contain_text("未对这一视角")
                     pixel = "Array.from(document.getElementById('cam_high').getContext('2d').getImageData(70,90,1,1).data).slice(0,3).join(',')"
                     page.wait_for_function(f"{pixel} === '52,237,181'")
@@ -135,9 +165,9 @@ def main():
                     page.wait_for_function(f"{pixel} !== '52,237,181'")
                     page.locator("#show-bbox").check()
                     page.wait_for_function(f"{pixel} === '52,237,181'")
-                    expect(page.locator("#ack")).to_have_text("已停止", timeout=15000)
+                    expect(page.locator("#ack")).to_have_text("停止 VLA" if integrated else "已停止", timeout=15000)
                     page.locator("#ack").click()
-                    expect(page.locator("#ack")).to_have_text("已归位")
+                    expect(page.locator("#ack")).to_have_text("执行归位" if integrated else "已归位")
                     page.locator("#ack").click()
                     expect(page.locator("#submit-target")).to_be_enabled()
                     expect(page.locator("#score-status")).to_have_text("任务成功")
@@ -162,7 +192,7 @@ def main():
                     page.locator("#view-live").click()
                     expect(page.locator("#note-cam_high")).to_contain_text("实时原图")
                     page.locator("#view-grm").click()
-                    expect(page.locator("#note-cam_high")).to_contain_text("SAM3 97.0%")
+                    expect(page.locator("#note-cam_high")).to_contain_text("97.0%")
                     page.screenshot(path=args.screenshot, full_page=True)
                     page.set_viewport_size({"width":390, "height":844})
                     assert page.evaluate("document.documentElement.scrollWidth <= innerWidth")
@@ -171,10 +201,14 @@ def main():
                     expect(page.locator("#submit-target")).to_be_enabled()
                     assert httpx.get(runtime_url + "/manual/status").json()["data"]["input"]["request_id"] == ready_prompt
                     assert not errors, errors
+                    if integrated:
+                        assert [c.get("name") for c in scheduler.calls].count("homing") == 1
+                        assert scheduler.state["single_step"] and scheduler.state["person"] == "browser-test"
+                        assert len(robot.calls) == 4
                     browser.close()
                 process.send_signal(signal.SIGINT)
                 assert process.wait(8) == 0
-                print(f"PASS: web target → MCP loop → manual start → score/bbox → stop → reset → ready; screenshot {args.screenshot}")
+                print(f"PASS: web target → MCP loop → {args.driver} start → score/bbox → stop → reset → ready; screenshot {args.screenshot}")
             finally:
                 driver.close()
                 if process.poll() is None:

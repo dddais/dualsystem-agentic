@@ -4,6 +4,13 @@
 通过 SSH 双向端口转发联通的启动过程。VLA 的开始、停止和归位由操作员在已有
 robot-bridge 控制界面完成，再在 Runtime 人工页面确认。
 
+希望在同一页面直接点击控制 VLA，可使用新增的
+[`manual_bridge` 模式](robot_bridge_adapters.md#中间版本manual_bridge同页点击控制)：
+将下文 Runtime 启动配置换为 `robot_runtime/robot_runtime/configs/manual_bridge.runtime.yaml`，
+配置 Scheduler 控制地址并开启 `--control-port 8088`；其余 Loop、相机与 Monitor 步骤相同。
+该模式下按钮直接发送命令并自动切换阶段。本文其余“已开始／已停止／已归位”说明
+对应原 `manual` 模式。
+
 `/manual` 现在同时提供目标输入、三视角画面和 Monitor 得分。首次更新这项功能时，
 需要同步从臂的本仓库，以及服务器 `Robo-Dopamine-delivery` 的 Monitor 修改，
 然后重启 Runtime、Monitor 和 loop。SAM3 和 robot-bridge 沿用现有服务；SSH 转发

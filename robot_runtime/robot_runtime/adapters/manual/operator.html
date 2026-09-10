@@ -18,16 +18,18 @@ button{cursor:pointer}button.primary{background:var(--accent);color:white;border
 .instruction{font-size:16px;line-height:1.7;overflow-wrap:anywhere;margin:12px 0 18px}.hint{font-size:12px;color:var(--muted);margin-top:10px}.error{font-size:13px;color:var(--red);overflow-wrap:anywhere}.error:not(:empty){margin-top:10px}
 .task-preview{min-height:44px;margin:10px 0 15px;color:var(--muted);font-size:12px;overflow-wrap:anywhere}.steps{display:flex;gap:7px;margin-bottom:18px}.steps span{flex:1;background:#f1f5f5;border-radius:5px;text-align:center;padding:6px 0;color:var(--muted);font-size:12px}.steps span.current{background:var(--soft);color:var(--accent);font-weight:700}
 .id{font:11px/1.7 ui-monospace,monospace;overflow-wrap:anywhere;margin-top:14px;color:var(--muted)}.toolbar{display:flex;align-items:center;gap:12px;flex-wrap:wrap}.segments{display:flex;background:#f0f4f4;padding:3px;border-radius:9px}.segments button{border:0;background:transparent;color:var(--muted);font-size:13px}.segments button[aria-pressed=true]{background:white;color:var(--ink);box-shadow:0 1px 4px #18303a14}.check{display:flex;gap:6px;align-items:center;margin:0;font-size:12px}.check input{accent-color:var(--accent)}select{padding:6px 8px;font-size:12px}
+.bridge-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px;margin-top:16px}.bridge-row{display:flex;gap:8px;flex-wrap:wrap;align-items:center;min-width:0}.bridge-row[data-support=set_prompt]{grid-column:1/-1}.bridge-row label{margin:0}.bridge-row input{width:140px;max-width:100%}.bridge-row select{max-width:100%;min-width:0}.bridge-row button[aria-pressed=true]{background:var(--soft);border-color:var(--accent)}.bridge-log{white-space:pre-wrap;overflow-wrap:anywhere;max-height:280px;overflow:auto;background:#162b32;color:#d8e9ee;padding:12px;border-radius:8px;font:12px/1.6 monospace}.danger{color:var(--red);border-color:var(--red)}
 .camera-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;margin-top:18px}.camera{min-width:0}.camera-head{display:flex;justify-content:space-between;padding:0 1px 8px;font-size:12px}.camera-head span{font:11px ui-monospace,monospace;color:var(--muted)}.viewport{background:#162b32;border-radius:9px;aspect-ratio:4/3;display:flex;align-items:center;justify-content:center;position:relative;overflow:hidden}.viewport canvas{display:block;width:100%;height:100%;object-fit:contain}.empty-camera{color:#9cb3ba;font-size:12px;position:absolute;pointer-events:none}.viewport.loaded .empty-camera{display:none}.camera-note{font-size:11px;color:var(--muted);min-height:34px;margin-top:8px}
 .score-layout{display:grid;grid-template-columns:190px minmax(0,1fr);gap:28px}.big-score{font-size:48px;line-height:1.3;font-variant-numeric:tabular-nums;letter-spacing:-2px;color:var(--accent)}.meter{height:6px;border-radius:9px;background:#e8f0f0;margin:10px 0 13px;overflow:hidden}.meter div{height:100%;background:var(--accent);transition:width .2s}.branches{font-size:12px;color:var(--muted);margin-top:12px}.branches strong{color:var(--ink);font-variant-numeric:tabular-nums}table{border-collapse:collapse;width:100%;font-size:13px;text-align:left}th{font-weight:500;color:var(--muted);font-size:12px}td,th{padding:8px 6px;border-bottom:1px solid #edf1f2}td:nth-child(n+2),th:nth-child(n+2){text-align:right;font-variant-numeric:tabular-nums}.chart{width:100%;height:95px;display:block;margin-top:16px}.footer-note{margin-top:12px;font-size:12px;color:var(--muted)}[hidden]{display:none!important}
 @media(max-width:1100px){header,main{padding:20px}main{grid-template-columns:260px minmax(0,1fr);gap:16px}.panel{padding:17px}.panel-top{align-items:flex-start;flex-wrap:wrap}.camera-grid{gap:8px}.camera-head span{display:none}.score-layout{grid-template-columns:140px minmax(0,1fr);gap:15px}.big-score{font-size:39px}}
 @media(max-width:780px){main{grid-template-columns:1fr}.sidebar{grid-template-columns:1fr 1fr;gap:12px}.camera-grid{grid-template-columns:1fr}.camera-head span{display:block}.viewport{aspect-ratio:16/10}.camera-note{min-height:0;margin-bottom:8px}.connection{font-size:12px}h1{font-size:20px}.score-layout{grid-template-columns:1fr}.sidebar .panel{min-width:0}}
 @media(max-width:480px){.sidebar{grid-template-columns:1fr}header,main{padding:15px}.toolbar{gap:8px}}
+@media(max-width:1100px){.bridge-grid{grid-template-columns:1fr}}
 </style>
 <script src="/manual/app.js" defer></script>
 </head>
 <body>
-<header><div><div class="eyebrow">ROBOT RUNTIME / MANUAL</div><h1>机器人操作台</h1></div><div class="connection" role="status"><span id="connection-dot" class="dot"></span><span id="connection">正在连接</span></div></header>
+<header><div><div class="eyebrow" id="runtime-mode">ROBOT RUNTIME / MANUAL</div><h1>机器人操作台</h1></div><div class="connection" role="status"><span id="connection-dot" class="dot"></span><span id="connection">正在连接</span></div></header>
 <main>
 <aside class="sidebar">
 <section class="panel"><div class="panel-top"><h2>目标任务</h2><span class="badge" id="phase">等待连接</span></div>
@@ -35,14 +37,32 @@ button{cursor:pointer}button.primary{background:var(--accent);color:white;border
 <p id="task-preview" class="task-preview">Loop 进入 ready 后，可在这里提交目标。</p><button id="submit-target" class="primary" type="submit" disabled>提交目标</button></form>
 <p id="target-hint" class="hint">正在检查 loop 状态…</p><p id="target-error" class="error" role="alert"></p>
 </section>
-<section class="panel"><div class="panel-top"><h2>人工操作</h2><span class="muted" style="font-size:12px">原 VLA 控制界面操作</span></div>
+<section class="panel"><div class="panel-top"><h2 id="operator-heading">人工操作</h2><span id="operator-mode" class="muted" style="font-size:12px">原 VLA 控制界面操作</span></div>
 <div class="steps"><span id="step-execute">开始</span><span id="step-stop">停止</span><span id="step-reset">归位</span></div>
 <h3 id="action-title">等待任务</h3><p id="instruction" class="instruction">—</p><p id="action-help" class="muted">参考帧准备完成后，这里会提示开始 VLA。</p>
 <button id="ack" class="primary" style="margin-top:18px" hidden>完成</button><p id="action-error" class="error" role="alert"></p>
-<p class="hint">在原有控制界面完成动作后，再点击确认。</p><p id="execution-id" class="id"></p>
+<p id="operator-hint" class="hint">在原有控制界面完成动作后，再点击确认。</p>
+<button id="bridge-estop" class="danger" style="margin-top:12px" hidden>立即软件停止</button><p id="estop-error" class="error" role="alert"></p><p id="execution-id" class="id"></p>
 </section>
 </aside>
 <div class="workspace">
+<section id="bridge-panel" class="panel" hidden>
+<div class="panel-top"><h2>VLA 控制</h2><span id="bridge-connection" class="badge">连接 Scheduler…</span></div>
+<p id="bridge-summary" class="muted"></p><p id="bridge-selection" class="hint"></p>
+<div id="bridge-controls" class="bridge-grid">
+<div class="bridge-row" data-support="set_prompt"><label for="bridge-prompt">训练指令</label><select id="bridge-prompt"></select><button id="bridge-set-prompt" data-action="set_prompt">选择</button></div>
+<div class="bridge-row" id="bridge-modes" data-support="set_mode"></div>
+<div class="bridge-row" data-support="toggle_recording"><button id="bridge-record" data-action="toggle_recording">开始录制</button><label for="bridge-person">采集人</label><input id="bridge-person" type="text" maxlength="64"><button id="bridge-set-person" data-action="set_person">应用</button></div>
+<div class="bridge-row" data-support="set_phase"><label for="bridge-phase">Phase</label><select id="bridge-phase"></select><button id="bridge-set-phase" data-action="set_phase">设置阶段</button><button id="bridge-lock" data-action="toggle_phase_lock">锁定 phase</button></div>
+<div class="bridge-row" data-support="adjust_latency"><span>latency_step</span><button data-action="adjust_latency" data-delta="-1">−</button><span id="bridge-latency">—</span><button data-action="adjust_latency" data-delta="1">＋</button></div>
+<div class="bridge-row" data-support="adjust_move_steps"><span>move_steps</span><button data-action="adjust_move_steps" data-delta="-1">−</button><span id="bridge-move">—</span><button data-action="adjust_move_steps" data-delta="1">＋</button></div>
+<div class="bridge-row" data-support="toggle_single_step"><button id="bridge-single-step" data-action="toggle_single_step">单步模式</button><button id="bridge-step" data-action="step">下一步</button></div>
+<div class="bridge-row" data-support="set_gripper_map"><label for="bridge-scale">夹爪 scale</label><input id="bridge-scale" type="number" step="0.1"><label for="bridge-offset">offset</label><input id="bridge-offset" type="number" step="0.1"><button id="bridge-gripper" data-action="set_gripper_map">应用映射</button></div>
+</div>
+<p class="hint">开始、停止、归位使用左侧本轮操作按钮。模式切换和单步在任务开始后可用；执行期间锁定训练指令。</p>
+<p id="bridge-error" class="error" role="alert"></p>
+<details id="bridge-debug" style="margin-top:16px"><summary>运行日志</summary><div class="bridge-row" style="margin-top:12px"><select id="bridge-log-target" aria-label="日志来源"><option>scheduler</option><option>policy</option><option>robot</option><option>master</option></select><button id="bridge-refresh-log">刷新日志</button></div><pre id="bridge-log" class="bridge-log">展开后加载日志。</pre></details>
+</section>
 <section class="panel"><div class="panel-top"><h2>三视角画面</h2><div class="toolbar">
 <div class="segments" aria-label="画面来源"><button id="view-live" type="button" aria-pressed="true">实时画面</button><button id="view-grm" type="button" aria-pressed="false">GRM 评分画面</button></div>
 <label class="check"><input id="show-bbox" type="checkbox" checked disabled>SAM3 bbox</label><select id="bbox-mode" aria-label="bbox 对应评分模式" disabled><option value="forward">forward</option><option value="incremental">incremental</option><option value="backward">backward</option></select>

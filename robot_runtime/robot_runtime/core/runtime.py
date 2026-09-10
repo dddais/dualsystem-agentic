@@ -414,6 +414,38 @@ class RobotRuntime:
                 "estop_latched": self._estop_latched,
             })
 
+    def dashboard_allowed_actions(self) -> list[str]:
+        """Ancillary scheduler controls must respect the execution lifecycle."""
+        with self._lock:
+            driver = self.robot_driver
+            if self._estop_latched or self._resetting or driver.status().get("pending"):
+                return []
+            execution = self._executions.get(self._active_execution_id)
+            if self._active_execution_id:
+                if (execution is None or not execution.driver_result.get("executed")
+                        or self._cancelled[execution.execution_id].is_set()):
+                    return []
+                # Keep the prompt seen by VLA consistent with the GRM task.
+                return sorted((driver.SETTINGS - {"set_prompt"}) | driver.MOTION)
+            return sorted(driver.SETTINGS)
+
+    def dashboard_action(self, name: str, args: JsonDict) -> JsonDict:
+        # A manual handoff holds _driver_lock; reject promptly rather than
+        # queueing a stale button behind several minutes of operator waiting.
+        if not self._driver_lock.acquire(blocking=False):
+            raise ValueError("finish the pending start/stop/reset operation first")
+        try:
+            with self._lock:
+                if name not in self.dashboard_allowed_actions():
+                    raise ValueError("scheduler action is unavailable in the current runtime phase")
+                cancelled = self._cancelled.get(self._active_execution_id)
+            # Keep the runtime state lock free for the independent emergency
+            # stop path while scheduler I/O is pending. The execution token
+            # prevents a delayed status reply from issuing a resume afterwards.
+            return self.robot_driver.scheduler_action(name, args, cancelled=cancelled)
+        finally:
+            self._driver_lock.release()
+
     def _resolve_monitor(self, payload: JsonDict) -> MonitorState:
         requested_monitor_id = _optional_text(payload.get("monitor_id"))
         requested_execution_id = _optional_text(

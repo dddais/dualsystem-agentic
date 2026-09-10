@@ -190,3 +190,43 @@ def test_json_protocol_rejects_unknown_action_without_affecting_scheduler(stack)
         assert scheduler._single_step
     finally:
         client.close()
+
+
+def test_manual_bridge_clicks_use_stock_scheduler_controls(stack):
+    from fastapi.testclient import TestClient
+    from robot_runtime.adapters.manual_bridge.robot_driver import ManualBridgeRobotDriver
+    from robot_runtime.adapters.dual_franka.monitor_provider import LocalMemoryMonitorProvider
+    from robot_runtime.api.app import create_app
+    from robot_runtime.core.runtime import RobotRuntime
+
+    robot, policy, scheduler, robot_url, control_url = stack
+    driver = ManualBridgeRobotDriver(scheduler_url=control_url, robot_url=robot_url,
+                                    operator_timeout_s=3, start_delay_s=0,
+                                    stop_delay_s=.01, reset_delay_s=.1)
+    runtime = RobotRuntime(robot_type="x1pro", robot_driver=driver,
+                           camera_provider=RobotBridgeCameraProvider(robot_url),
+                           monitor_provider=LocalMemoryMonitorProvider())
+    with TestClient(create_app(runtime)) as client, ThreadPoolExecutor() as pool:
+        state = client.get("/manual/bridge/status").json()["data"]["state"]
+        assert state["scheduler"] == "OpenPiScheduler" and state["single_step"]
+
+        def click(action):
+            wait_until(lambda: driver.status()["pending"] is not None)
+            pending = driver.status()["pending"]
+            assert pending["action"] == action
+            assert client.post("/manual/action", json={"request_id": pending["request_id"]}).status_code == 200
+
+        start = pool.submit(runtime.create_execution, {"execution_id": "one", "subtask": "pick cup"})
+        click("execute")
+        assert start.result(3).driver_result["executed"]
+        assert scheduler.run_iteration() == "ok"
+        assert policy.prompts == ["pick cup"] and len(robot.executed) == 1
+        stop = pool.submit(runtime.stop)
+        click("stop")
+        assert stop.result(3)["stopped"] and scheduler._single_step
+        reset = pool.submit(runtime.reset)
+        click("reset")
+        wait_until(lambda: scheduler._homing_requested)
+        scheduler.build_obs_request()
+        assert reset.result(3)["reset"] and robot.homed == 1
+        assert client.get("/observations/latest/metadata").status_code == 200

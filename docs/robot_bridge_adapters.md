@@ -1,6 +1,6 @@
-# Manual / robot-bridge 真机接入
+# Manual / manual_bridge / robot_bridge 真机接入
 
-两个 RobotDriver 使用同一套 MCP、Runtime HTTP、GRM Monitor 接口。相机独立配置为
+三个 RobotDriver 使用同一套 MCP、Runtime HTTP、GRM Monitor 接口。相机独立配置为
 `camera.provider: robot_bridge`，直接读取已运行的 Robot Server，不再经过 `/tmp/img`。
 本实现不修改 robot-bridge 源码，不启动第二个 SDK controller，不加载第二份 VLA。
 
@@ -9,7 +9,7 @@
 - 服务器：沿用 VLA Policy Server，以及 GRM Monitor / SAM3。
 - 从臂端：沿用 Robot Server、Scheduler；新增 Robot Runtime 和上游 loop。
 - Scheduler 可以仍运行在原机器，Runtime 配置中的 `scheduler_url` 指向它。
-- 自动模式要求 Scheduler 控制端口已开启，且 checkpoint 有固定 `prompts` 集合。
+- `manual_bridge` 和自动模式要求 Scheduler 控制端口已开启，且 checkpoint 有固定 `prompts` 集合。
   保留原 Scheduler 启动参数，增加 `--control-port 8088`。`openpi` 与
   `openpi_takeover` 都支持；无需为普通从臂部署额外启动主臂。
 
@@ -24,7 +24,7 @@ python -c 'import robot_bridge.transport.codec'
 `robot_bridge` 来自现场已有安装；若 import 失败，在同一环境中安装现场源码
 `python -m pip install -e /path/to/robot-bridge`。Loop 仍可使用原来的 Agent 环境。
 
-两份 Runtime YAML 都需要设置 `monitor.url` 为 GRM 服务器 HTTP 地址。
+三份 Runtime YAML 都需要设置 `monitor.url` 为 GRM 服务器 HTTP 地址。
 GRM 配置的 `robot_runtime_url` 反向指向 `http://<从臂IP>:8767`。
 Robot Server 是 WebSocket 地址（部署常用 9946），不是 SDK 的 50051。
 
@@ -68,7 +68,79 @@ PYTHONPATH=src python examples/run_simple_robot.py --config examples/config.simp
 该操作后向 `POST /manual/ack` 提交 `{"request_id":"<当前请求ID>"}`。
 未知/过期 ID 返回 409；已经确认的 ID 幂等返回，但不会影响新请求。
 
-## 版本二：robot_bridge
+## 中间版本：manual_bridge（同页点击控制）
+
+保留 manual 的逐步操作流程，将 robot-bridge 的控制接入 `/manual`。
+每一步点击直接发送命令，成功并完成配置的等待后自动放行 loop，无需切换网页或
+再点击“已开始 / 已停止 / 已归位”。原 `manual` 与自动 `robot_bridge` 仍可独立选择。
+
+在已有 Runtime 环境更新安装，并使用新增配置：
+
+```bash
+cd /path/to/dualsystem-agentic
+python -m pip install -e './robot_runtime[bridge]'
+robot-runtime --config robot_runtime/robot_runtime/configs/manual_bridge.runtime.yaml \
+  --host 0.0.0.0 --port 8767
+```
+
+现场 Scheduler 需开启 `--control-port 8088`。配置中的 `robot.scheduler_url`、
+`robot.robot_url` 和 `monitor.url` 分别指向 Scheduler 控制面、Robot Server 和 GRM。
+新增 YAML 默认沿用 manual 的 Monitor SSH 转发 `http://127.0.0.1:18877`；直连时改为
+实际服务地址。相机、GRM、SAM3 以及双向 SSH 转发沿用 [manual_start.md](manual_start.md)。
+
+Loop 继续使用人工等待超时配置，在另一个终端运行：
+
+```bash
+export DUAL_FRANKA_RUNTIME_URL=http://127.0.0.1:8767
+PYTHONPATH=src python examples/run_simple_robot.py \
+  --config examples/config.simple_loop.manual.yaml --input-source web
+```
+
+只需打开 `http://<Runtime主机>:8767/manual`：
+
+1. ready 时输入目标、提交；等待 GRM 起始参考帧。
+2. 点击“启动 VLA”：暂停并清队列、选择本轮匹配的训练 prompt、启动 Scheduler；
+   等 `start_delay_s` 后激活 GRM 评分。
+3. 本轮结束后点击“停止 VLA”：暂停并清理队列，等 `stop_delay_s` 后再次清队列；
+   成功后 loop 提示归位。
+4. 点击“执行归位”：沿用 Scheduler homing，等 `reset_delay_s` 后返回 ready。
+
+`robot.operator_timeout_s` 只约束等待点击，默认 300 秒。点击立即返回 accepted；
+命令由持有 Runtime 执行锁的原工作线程处理，页面持续显示“执行中”。接口接收点击
+不代表动作已完成，Monitor 激活和 loop 状态切换仍等待 driver 成功返回。
+开始、停止和归位的延时策略与自动 `robot_bridge` 相同，**不代表实测停稳或归位姿态验证**。
+
+页面增加 VLA 控制区，按 Scheduler 能力显示：训练指令、takeover 模式、录制与
+采集人、phase 与锁定、latency_step / move_steps、单步、夹爪映射和四路日志。
+开始／停止／归位通过本轮操作按钮处理；参考帧准备及交接期间禁用辅助控制，
+任务启动后才可切换模式或单步。模式切换／暂停属于本轮执行内的操作，不结束 loop；
+loop 仍根据 Monitor 结果进入停止、归位阶段。执行期间不能换训练 prompt，避免
+VLA 与 GRM 的任务指令不一致。录制、phase 等辅助设置不会放行人工交接。
+
+启动时始终按 instruction / `robot.prompt_map` 选择本轮 prompt，页面会显示实际
+将发送的训练文本；ready 阶段的手动 prompt 选择不能覆盖该匹配规则。
+上游模板与训练文本不一致时，按下文配置 `prompt_map`；缺失匹配会显示错误并禁用
+启动按钮，不会默认启动第一个任务。需要在真机前确认两段指令语义一致。
+
+“立即软件停止”使用 Runtime 的急停入口与独立 bridge 连接，可以取消等待点击、
+启动或归位过程，不需要再次人工确认；停止后锁存，完成归位后才允许下一次执行。
+它与自动 driver 一样是软件停止，`hardware_estop: false`。
+
+HTTP 客户端可使用：
+
+| 接口 | 行为 |
+|---|---|
+| `GET /manual/status` | `control_mode: bridge`；`pending.phase` 为 waiting / queued / running，`last_operation` 保存完成结果或错误 |
+| `POST /manual/action` | 提交 `{"request_id":"<本轮待操作ID>"}`，触发该操作；重复 ID 不重发命令，过期／未知 ID 返回 409 |
+| `GET /manual/bridge/status` | Scheduler 当前状态、本轮匹配 prompt、Runtime 当前允许的辅助动作 |
+| `POST /manual/bridge/action` | `{"name":"set_phase","args":{"phase":2}}` 等辅助控制；后端检查本轮阶段，禁止绕过交接直接 homing |
+| `GET /manual/bridge/log?target=scheduler&lines=200` | scheduler / policy / robot / master 日志，经 Runtime 转发 |
+
+新模式的 `/manual/ack` 返回 409，不能用人工确认绕过真实命令。
+命令失败不会放行成成功状态，页面显示 `last_operation.error`，Runtime 按原流程
+进行停止清理。命令响应丢失时不自动重发；相机及评分仍使用原有独立链路。
+
+## 自动版本：robot_bridge
 
 Runtime：
 
@@ -143,7 +215,7 @@ Robot Server 队列，但不会继续自动归位。
 
 ## 三路相机 provider
 
-两个 driver 共用以下配置：
+三个 driver 共用以下配置：
 
 ```yaml
 camera:
@@ -192,10 +264,15 @@ GRM 会记录 `synchronization_verified: false`。本机 `received_at` 单独用
 
 ```bash
 python -m pytest -q tests/test_bridge_adapters.py tests/test_robot_runtime.py \
-  tests/test_runtime_contracts.py tests/test_simple_loop.py
+  tests/test_runtime_contracts.py tests/test_simple_loop.py tests/test_manual_bridge.py
 
 # 额外使用真实 robot-bridge 的传输层、Scheduler 和 Server；不连接硬件/GPU。
 PYTHONPATH=/path/to/robot-bridge python -m pytest -q tests/test_robot_bridge_wire.py
+
+# 浏览器 + 真实 HTTP/MCP/Loop/Monitor 服务，模拟机器人与模型（需 Playwright/Chromium）。
+PYTHONPATH=/path/to/robot-bridge python tests/validate_manual_dashboard.py \
+  --driver manual_bridge --monitor-repo /path/to/Robo-Dopamine-delivery \
+  --screenshot /tmp/manual-bridge-dashboard.png
 ```
 
 验证覆盖人工交接/取消、恢复等待期间拒绝新任务、固定 prompt 选择、延时归位、
@@ -203,5 +280,10 @@ PYTHONPATH=/path/to/robot-bridge python -m pytest -q tests/test_robot_bridge_wir
 和 RobotController，真实 Scheduler 处理 JSON 控制、推理请求、暂停和 homing。
 本地测试不证明物理归位效果或现场延时参数足够。
 
-本次全仓回归：184 项测试通过，另有 7 个子测试通过；包括上述 3 项原生
-robot-bridge 本地接口测试。Runtime wheel 也已验证包含人工页面及两份新增配置。
+manual_bridge 的测试还覆盖点击后才发命令、参考帧与 Monitor 激活顺序、等待期间
+显示执行中、重复／旧按钮不影响下一操作、失败不重发、取消与启动竞态、急停锁存、
+辅助控制阶段检查，以及原生 robot-bridge 控制面的完整开始／停止／归位流程。
+
+本次验证：全仓 209 项测试及 9 个子测试通过（含 4 项原生 robot-bridge 接口测试）；
+Runtime wheel 包含新 driver、配置和共享页面。浏览器脚本支持分别验证 `manual`
+与 `manual_bridge` 的真实 HTTP/MCP/Loop/Monitor 链路，模型和机器人使用模拟实现。

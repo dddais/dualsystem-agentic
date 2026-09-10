@@ -63,11 +63,12 @@ class RobotBridgeRobotDriver:
         if token is not None and token.is_set():
             raise RuntimeError("robot-bridge operation cancelled")
 
-    def _begin(self, action, execution_id):
+    def _begin(self, action, execution_id, cancelled=None):
         with self._lock:
             if action == "execute" and execution_id in self._cancelled_ids:
                 raise RuntimeError("execution cancelled before driver startup")
-            token = threading.Event()
+            token = cancelled if cancelled is not None else threading.Event()
+            self._check_cancelled(token)
             self._pending = (action, execution_id, token)
             return token
 
@@ -132,8 +133,8 @@ class RobotBridgeRobotDriver:
             raise ValueError(f"prompt index out of range: {index}")
         return index, prompts[index]
 
-    def execute(self, request: ExecutionRequest, execution: ExecutionState) -> dict:
-        token = self._begin("execute", execution.execution_id)
+    def execute(self, request: ExecutionRequest, execution: ExecutionState, *, cancelled=None) -> dict:
+        token = self._begin("execute", execution.execution_id, cancelled)
         try:
             state = self._state(self._scheduler)
             index, prompt = self._prompt_index(request, state)
@@ -167,8 +168,8 @@ class RobotBridgeRobotDriver:
         return {"stopped": True, "execution_id": execution_id,
                 "completion_basis": "command_and_delay", "wait_s": self.stop_delay_s}
 
-    def reset(self) -> dict:
-        token = self._begin("reset", self._last_control.get("execution_id"))
+    def reset(self, *, cancelled=None) -> dict:
+        token = self._begin("reset", self._last_control.get("execution_id"), cancelled)
         try:
             state = self._state(self._scheduler)
             if "homing" not in state["actions"]:

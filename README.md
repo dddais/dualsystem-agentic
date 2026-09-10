@@ -4,7 +4,7 @@
 
 无需 VLM 的键盘控制入口见 [最简三状态循环](docs/simple_loop.md)：输入目标物体名词（回车复用上一目标），按配置模板生成指令，执行并监控，中止恢复后等待下一次输入。
 
-基于现有部署系统的两种接入方式见 [manual / robot-bridge adapter](docs/robot_bridge_adapters.md)：人工操作交接，或自动选择固定 VLA 指令、停止和延时归位；两者共用直接读取 Robot Server 的相机 provider。
+基于现有部署系统的三种接入方式见 [Robot Runtime adapters](docs/robot_bridge_adapters.md)：`manual` 人工确认，`manual_bridge` 在同一操作页点击控制 VLA 并自动切换阶段，`robot_bridge` 自动执行。三者共用直接读取 Robot Server 的相机 provider。
 
 Manual 真机部署的环境安装、SSH 转发、配置与逐终端启动步骤见 [manual_start.md](docs/manual_start.md)。
 
@@ -20,11 +20,11 @@ Manual 真机部署的环境安装、SSH 转发、配置与逐终端启动步骤
 
 当前 Dual-Franka 已实现的 `MCP_tools`：
 
-说明：这些 tool 的实际行为由 RobotDriver 配置决定。默认 Dual-Franka 配置仍为 placeholder；manual 等待人工操作，robot_bridge 则调用已有部署的控制接口。
+说明：这些 tool 的实际行为由 RobotDriver 配置决定。默认 Dual-Franka 配置仍为 placeholder；manual 等待人工确认，manual_bridge 等待页面点击后调用部署控制接口，robot_bridge 则自动调用。
 
 | Tool | MCP 状态 | 机器人端真实实现状态 | 作用 | Robot Runtime 接口 |
 |------|----------|----------------------|------|--------------------|
-| `execute` | 默认启用 | placeholder 记录请求；manual 等人工开始；robot_bridge 选择 prompt 并启动 Scheduler | 启动一个子任务，并返回 execution / monitor 标识 | `POST /executions` |
+| `execute` | 默认启用 | placeholder 记录请求；manual 等人工确认；manual_bridge 等点击后选择 prompt 并启动 Scheduler；robot_bridge 自动启动 | 启动一个子任务，并返回 execution / monitor 标识 | `POST /executions` |
 | `monitor` | 默认启用 | 已支持机器人端/远端 monitor provider；当前推荐通过 `remote_http` 接入外部 monitor 服务 | 查询当前子任务状态，返回 `running`、`success` 或 `failed` | `POST /monitors/status` |
 | `stop_task` | 默认启用 | 接口已打通到 runtime，真实停止行为取决于后续接入的 driver | 停止当前任务 | `POST /control/stop` |
 | `emergency_stop` | 默认启用 | 接口已打通到 runtime，真实急停行为取决于后续接入的 driver / safety 机制 | 急停 Robot Runtime | `POST /control/emergency_stop` |
@@ -453,7 +453,7 @@ curl -X POST http://<robot-machine-ip>:8767/control/open_gripper \
 当前内置配置支持：
 
 - `robot.type: dual_franka`、`x1pro`（也接受 `manual`、`robot_bridge` 标签）
-- `robot.driver: placeholder`、`manual`、`robot_bridge`
+- `robot.driver: placeholder`、`manual`、`manual_bridge`、`robot_bridge`
 - `camera.provider: local_files`、`robot_bridge`
 - `monitor.provider: local_memory`、`local_grm`、`remote_http`
 
@@ -524,5 +524,5 @@ python examples/visualize_run_video.py \
 ## 注意事项
 
 - `python robot_runtime/robot_runtime/api/app.py --host 0.0.0.0` 会暴露控制接口，请只在受控网络中使用，并为真实硬件增加访问控制和急停策略。
-- 默认 Dual-Franka driver 是 placeholder；选择 manual 或 robot_bridge 配置可使用人工交接或已有部署控制接口。
+- 默认 Dual-Franka driver 是 placeholder；选择 manual、manual_bridge 或 robot_bridge 配置可使用人工确认、同页点击控制或自动部署控制。
 - `mcp_server/` 当前作为源码目录使用；如果只安装 wheel 而不保留仓库源码，需要为 MCP server 提供独立入口，或调整配置中的 `command/args`。

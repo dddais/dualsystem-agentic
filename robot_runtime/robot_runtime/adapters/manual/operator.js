@@ -6,6 +6,12 @@ const actions = {
   stop: ["停止任务", "请在原 UI 停止 VLA 和机械臂当前动作，再点击“已停止”。", "已停止"],
   reset: ["恢复初始状态", "请在原系统让机械臂归位，完成后点击“已归位”。", "已归位"]
 };
+const bridgeActions = {
+  execute: ["开始任务", "参考帧已就绪。点击后选择匹配的训练指令并启动 VLA，随后自动激活评分。", "启动 VLA"],
+  stop: ["停止任务", "点击后暂停 Scheduler、清理动作队列，完成后自动进入归位阶段。", "停止 VLA"],
+  reset: ["恢复初始状态", "点击后执行原系统 homing，等待配置的归位时间后返回 ready。", "执行归位"]
+};
+let bridgeStatus = null, bridgeConnected = false, bridgeSending = false, sendingEstop = false, operationId = null;
 let status = null, connected = false, view = "live", sendingTarget = false, sendingAck = false;
 let inputId = null, imageEpoch = 0, imageKey = "", lastLive = 0, displayedMonitor = null;
 let historyId = null, history = [];
@@ -34,8 +40,10 @@ function taskPreview() {
 }
 
 function renderControls() {
+  const integrated = status?.control_mode === "bridge";
   const pending = connected ? status?.pending : null;
-  const label = pending && actions[pending.action];
+  const label = pending && (integrated ? bridgeActions : actions)[pending.action];
+  const busy = integrated && pending && pending.phase !== "waiting";
   const ready = isReady();
   $("target").disabled = !ready || sendingTarget;
   $("submit-target").disabled = !ready || sendingTarget;
@@ -55,12 +63,26 @@ function renderControls() {
   taskPreview();
   $("action-title").textContent = label ? label[0] : status?.active_execution_id ? "等待评分或准备参考帧" : "等待任务";
   $("instruction").textContent = pending?.instruction || status?.execution?.subtask || "—";
-  $("action-help").textContent = label ? label[1] : "需要人工操作时，这里会显示提示。";
+  $("action-help").textContent = busy ? "操作已提交，正在执行命令并等待完成…" : label ? label[1] : "需要人工操作时，这里会显示提示。";
   $("ack").hidden = !label;
-  $("ack").disabled = !connected || sendingAck;
-  if (label) $("ack").textContent = label[2];
+  $("ack").disabled = !connected || sendingAck || busy || (integrated && pending?.action === "execute"
+    && (!bridgeConnected || !!bridgeStatus?.selection_error || status.estop_latched));
+  if (label) $("ack").textContent = busy ? "执行中…" : label[2];
+  $("runtime-mode").textContent = integrated ? "ROBOT RUNTIME / MANUAL BRIDGE" : "ROBOT RUNTIME / MANUAL";
+  $("operator-heading").textContent = integrated ? "本轮操作" : "人工操作";
+  $("operator-mode").textContent = integrated ? "点击直接控制 VLA" : "原 VLA 控制界面操作";
+  $("operator-hint").textContent = integrated ? "命令成功并完成配置的等待后，状态自动切换，无需再次确认。" : "在原有控制界面完成动作后，再点击确认。";
+  $("bridge-panel").hidden = !integrated;
+  $("bridge-estop").hidden = !integrated;
+  $("bridge-estop").disabled = !connected || sendingEstop;
+  if (integrated && status.last_operation && operationId !== status.last_operation.request_id) {
+    operationId = status.last_operation.request_id;
+    $("action-error").textContent = status.last_operation.error || "";
+  }
+  if (integrated && status.estop_latched) $("action-help").textContent = "软件停止已锁存；完成停止、归位流程后才能开始下一轮。";
   for (const action of Object.keys(actions)) $("step-" + action).classList.toggle("current", pending?.action === action);
   $("execution-id").textContent = status?.execution ? `本轮 ${status.execution.execution_id}` : "";
+  renderBridge();
 }
 
 $("target").addEventListener("input", taskPreview);
@@ -82,7 +104,9 @@ $("ack").addEventListener("click", async () => {
   const requestId = status.pending.request_id;
   sendingAck = true; renderControls();
   try {
-    await request("/manual/ack", {request_id: requestId});
+    const integrated = status?.control_mode === "bridge";
+    await request(integrated ? "/manual/action" : "/manual/ack", {request_id: requestId});
+    if (integrated && status?.pending?.request_id === requestId) status.pending.phase = "queued";
     $("action-error").textContent = "";
   } catch (error) { $("action-error").textContent = error.message; }
   finally { sendingAck = false; renderControls(); }
@@ -286,5 +310,120 @@ async function pollStatus() {
   renderControls(); setTimeout(pollStatus,500);
 }
 async function pollCameras() { await refreshCameras(); setTimeout(pollCameras,350); }
+
+function selectOptions(id, entries, selected) {
+  const element = $(id), key = JSON.stringify(entries);
+  if (element.dataset.options !== key) {
+    element.replaceChildren(...entries.map(([value, label]) => new Option(label, String(value))));
+    element.dataset.options = key; delete element.dataset.dirty;
+  }
+  if (!element.dataset.dirty && document.activeElement !== element) element.value = String(selected ?? "");
+}
+
+function renderBridge() {
+  if (status?.control_mode !== "bridge") return;
+  const s = bridgeStatus?.state || {}, supported = s.actions || [];
+  const available = connected && bridgeConnected && !bridgeSending && !status.pending && !status.resetting && !status.estop_latched;
+  const allowed = available ? bridgeStatus.allowed_actions || [] : [];
+  $("bridge-connection").textContent = bridgeConnected ? "Scheduler 已连接" : "Scheduler 未连接";
+  $("bridge-summary").textContent = `${s.scheduler || "Scheduler"} · 迭代 ${s.iteration ?? "—"} · ${s.mode || (s.single_step ? "单步 / 暂停" : "连续运行")}${s.homing_pending ? " · 归位中" : ""}`;
+  $("bridge-selection").textContent = bridgeStatus?.selection_error || (bridgeStatus?.selection
+    ? `本轮启动将使用：${bridgeStatus.selection.index}. ${bridgeStatus.selection.prompt}` : "开始时根据本轮 instruction / prompt_map 自动选择训练指令。");
+  for (const row of document.querySelectorAll("[data-support]")) row.hidden = !supported.includes(row.dataset.support);
+  selectOptions("bridge-prompt", (s.prompts || []).map((prompt, i) => [i, `${i}. ${prompt}`]), (s.prompts || []).indexOf(s.prompt));
+  selectOptions("bridge-phase", Array.from({length: 10}, (_, i) => [i, `${i} ${s.phase_labels?.[i] || ""}`]), s.phase);
+  const modes = $("bridge-modes");
+  if (modes.dataset.modes !== JSON.stringify(s.modes || [])) {
+    modes.replaceChildren(...(s.modes || []).map(mode => {
+      const button = document.createElement("button");
+      button.dataset.action = "set_mode"; button.dataset.mode = mode;
+      button.textContent = {idle: "空闲", teleop: "遥操作", autonomous: "自主运行"}[mode] || mode;
+      return button;
+    }));
+    modes.dataset.modes = JSON.stringify(s.modes || []);
+  }
+  for (const button of modes.children) button.setAttribute("aria-pressed", String(button.dataset.mode === s.mode));
+  $("bridge-record").textContent = s.recording ? "停止录制（录制中）" : "开始录制";
+  $("bridge-lock").textContent = s.phase_locked ? "解锁 phase" : "锁定 phase";
+  $("bridge-latency").textContent = s.latency_step ?? "—";
+  $("bridge-move").textContent = s.move_steps ?? "—";
+  $("bridge-single-step").textContent = s.single_step ? "切到连续运行" : "切到单步 / 暂停";
+  for (const [id, value] of [["bridge-person", s.person], ["bridge-scale", s.gripper_map?.scale], ["bridge-offset", s.gripper_map?.offset]]) {
+    if (!$(id).dataset.dirty && document.activeElement !== $(id)) $(id).value = value ?? "";
+  }
+  for (const button of document.querySelectorAll("#bridge-controls [data-action]")) {
+    button.disabled = !allowed.includes(button.dataset.action) || !supported.includes(button.dataset.action)
+      || (button.dataset.action === "step" && !s.single_step);
+  }
+  for (const input of document.querySelectorAll("#bridge-controls input, #bridge-controls select")) {
+    input.disabled = !allowed.includes(input.closest("[data-support]").dataset.support);
+  }
+}
+
+for (const input of document.querySelectorAll("#bridge-controls input, #bridge-controls select")) {
+  input.addEventListener("input", () => { input.dataset.dirty = "true"; });
+}
+$("bridge-controls").addEventListener("click", async event => {
+  const button = event.target.closest("button[data-action]");
+  if (!button || button.disabled || bridgeSending) return;
+  const name = button.dataset.action;
+  let args = {}, edited = [];
+  if (button.dataset.delta) args = {delta: Number(button.dataset.delta)};
+  if (name === "set_mode") args = {mode: button.dataset.mode};
+  if (name === "set_prompt") { args = {index: Number($("bridge-prompt").value)}; edited = ["bridge-prompt"]; }
+  if (name === "set_phase") { args = {phase: Number($("bridge-phase").value)}; edited = ["bridge-phase"]; }
+  if (name === "set_person") { args = {person: $("bridge-person").value}; edited = ["bridge-person"]; }
+  if (name === "set_gripper_map") {
+    edited = ["bridge-scale", "bridge-offset"];
+    if (edited.some(id => !$(id).value.trim() || !Number.isFinite(Number($(id).value)))) {
+      $("bridge-error").textContent = "夹爪映射必须填写有效数值。"; return;
+    }
+    args = {scale: Number($("bridge-scale").value), offset: Number($("bridge-offset").value)};
+  }
+  bridgeSending = true; renderBridge();
+  try {
+    await request("/manual/bridge/action", {name, args});
+    edited.forEach(id => { delete $(id).dataset.dirty; });
+    $("bridge-error").textContent = "";
+  } catch (error) { $("bridge-error").textContent = error.message; }
+  finally { bridgeSending = false; renderBridge(); }
+});
+
+$("bridge-estop").addEventListener("click", async () => {
+  if (!connected || sendingEstop) return;
+  sendingEstop = true; renderControls();
+  try {
+    const response = await fetch("/control/emergency_stop", {method: "POST"});
+    const result = await response.json();
+    if (!response.ok || !result.success || !result.data?.emergency_stop) throw Error(result.message || "软件停止失败");
+    $("estop-error").textContent = "";
+  } catch (error) { $("estop-error").textContent = error.message; }
+  finally { sendingEstop = false; renderControls(); }
+});
+
+async function refreshBridgeLog() {
+  if (!bridgeConnected || !$("bridge-debug").open) return;
+  try {
+    const result = await request(`/manual/bridge/log?target=${encodeURIComponent($("bridge-log-target").value)}&lines=200`);
+    $("bridge-log").textContent = (result.lines || []).join("\n") || "暂无日志";
+  } catch (error) { $("bridge-log").textContent = error.message; }
+}
+$("bridge-debug").addEventListener("toggle", refreshBridgeLog);
+$("bridge-log-target").addEventListener("change", refreshBridgeLog);
+$("bridge-refresh-log").addEventListener("click", refreshBridgeLog);
+
+async function pollBridge() {
+  if (connected && status?.control_mode === "bridge") {
+    try {
+      bridgeStatus = await request("/manual/bridge/status");
+      if (!bridgeConnected) $("bridge-error").textContent = "";
+      bridgeConnected = true;
+    } catch (error) {
+      bridgeConnected = false; $("bridge-error").textContent = error.message;
+    }
+    renderControls();
+  }
+  setTimeout(pollBridge, 1000);
+}
 setInterval(updateAge,1000);
-pollStatus(); pollCameras();
+pollStatus(); pollCameras(); pollBridge();

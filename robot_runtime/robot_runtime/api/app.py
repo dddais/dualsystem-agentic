@@ -23,6 +23,7 @@ from robot_runtime.adapters.dual_franka.monitor_provider import (
 )
 from robot_runtime.adapters.dual_franka.robot_driver import PlaceholderDualFrankaRobotDriver
 from robot_runtime.adapters.manual.robot_driver import ManualRobotDriver
+from robot_runtime.adapters.manual_bridge.robot_driver import ManualBridgeRobotDriver
 from robot_runtime.adapters.manual.target_input import ManualTargetInput
 from robot_runtime.adapters.robot_bridge.camera_provider import RobotBridgeCameraProvider
 from robot_runtime.adapters.robot_bridge.robot_driver import RobotBridgeRobotDriver
@@ -183,6 +184,52 @@ def create_app(runtime: RobotRuntime) -> FastAPI:
         except ValueError as exc:
             return _fail(str(exc), status=409)
 
+    @app.post("/manual/action")
+    def manual_action(body: dict[str, Any]):
+        if not isinstance(runtime.robot_driver, ManualBridgeRobotDriver):
+            return _fail("manual_bridge adapter is not enabled", status=404)
+        request_id = body.get("request_id")
+        if not isinstance(request_id, str) or not request_id:
+            return _fail("request_id is required", status=400)
+        try:
+            return _ok(runtime.robot_driver.request_action(request_id))
+        except ValueError as exc:
+            return _fail(str(exc), status=409)
+
+    @app.get("/manual/bridge/status")
+    def manual_bridge_status():
+        if not isinstance(runtime.robot_driver, ManualBridgeRobotDriver):
+            return _fail("manual_bridge adapter is not enabled", status=404)
+        try:
+            return _ok({**runtime.robot_driver.scheduler_status(),
+                        "allowed_actions": runtime.dashboard_allowed_actions()})
+        except Exception as exc:
+            return _fail(str(exc), status=503)
+
+    @app.post("/manual/bridge/action")
+    def manual_bridge_action(body: dict[str, Any]):
+        if not isinstance(runtime.robot_driver, ManualBridgeRobotDriver):
+            return _fail("manual_bridge adapter is not enabled", status=404)
+        if not isinstance(body.get("name"), str) or not isinstance(body.get("args", {}), dict):
+            return _fail("name must be a string and args an object", status=400)
+        try:
+            return _ok(runtime.dashboard_action(body["name"], body.get("args", {})))
+        except ValueError as exc:
+            return _fail(str(exc), status=409)
+        except Exception as exc:
+            return _fail(str(exc), status=503)
+
+    @app.get("/manual/bridge/log")
+    def manual_bridge_log(target: str = "scheduler", lines: int = 200):
+        if not isinstance(runtime.robot_driver, ManualBridgeRobotDriver):
+            return _fail("manual_bridge adapter is not enabled", status=404)
+        try:
+            return _ok(runtime.robot_driver.scheduler_log(target, lines))
+        except ValueError as exc:
+            return _fail(str(exc), status=400)
+        except Exception as exc:
+            return _fail(str(exc), status=503)
+
     @app.post("/executions")
     def executions(body: dict[str, Any]):
         try:
@@ -234,6 +281,10 @@ def create_app(runtime: RobotRuntime) -> FastAPI:
                     "GET  /manual",
                     "GET  /manual/status",
                     "POST /manual/ack",
+                    "POST /manual/action",
+                    "GET  /manual/bridge/status",
+                    "POST /manual/bridge/action",
+                    "GET  /manual/bridge/log",
                     "POST /manual/input/open",
                     "GET  /manual/input/{request_id}",
                     "DELETE /manual/input/{request_id}",
@@ -266,8 +317,11 @@ def build_runtime_from_config(config: dict[str, Any]) -> RobotRuntime:
     elif driver_name == "manual":
         robot_driver = ManualRobotDriver(
             operator_timeout_s=robot_config.get("operator_timeout_s", 300.0))
-    elif driver_name == "robot_bridge":
-        robot_driver = RobotBridgeRobotDriver(
+    elif driver_name in {"robot_bridge", "manual_bridge"}:
+        driver_class = ManualBridgeRobotDriver if driver_name == "manual_bridge" else RobotBridgeRobotDriver
+        operator_config = {"operator_timeout_s": robot_config.get("operator_timeout_s", 300.0)} if driver_name == "manual_bridge" else {}
+        robot_driver = driver_class(
+            **operator_config,
             scheduler_url=robot_config.get("scheduler_url", "ws://127.0.0.1:8088"),
             robot_url=robot_config.get("robot_url", "ws://127.0.0.1:9946"),
             timeout_s=robot_config.get("timeout_s", 5.0),
