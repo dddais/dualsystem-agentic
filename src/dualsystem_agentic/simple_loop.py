@@ -13,6 +13,7 @@ from typing import Callable
 from dualsystem_agentic.core.types import JsonDict
 from dualsystem_agentic.mcp.base import MCPToolClient
 from dualsystem_agentic.config import SimpleLoopConfig
+from dualsystem_agentic.task_input import TaskInput
 
 
 class SimplePhase(str, Enum):
@@ -57,7 +58,7 @@ class SimpleRobotLoop:
         stop_tool: str = "stop_task",
         recover_tool: str = "reset_task",
         settings: SimpleLoopConfig | None = None,
-        read_input: Callable[[str], str] = input,
+        read_input: Callable[[str], str | TaskInput] = input,
         write: Callable[[str], None] = print,
         sleep: Callable[[float], None] = time.sleep,
         clock: Callable[[], float] = time.monotonic,
@@ -130,8 +131,8 @@ class SimpleRobotLoop:
         self.phase = SimplePhase.READY
         self.write("[ready] 中止与恢复完成")
 
-    def run_cycle(self, target: str) -> None:
-        """Fill the instruction template and run one target; always stop/reset.
+    def run_cycle(self, target: str | TaskInput) -> None:
+        """Run a finalized web task or fill the terminal template; stop/reset.
 
         Execution/monitor errors recover and return to ready. Control errors
         propagate with phase=RECOVERING, preventing another execution.
@@ -139,11 +140,20 @@ class SimpleRobotLoop:
         """
         if self.phase is not SimplePhase.READY:
             raise RuntimeError("Cannot execute before recovery completes")
-        target = target.strip() or self.last_target
-        if not target:
-            raise ValueError("Enter a target before reusing it")
-        self.last_target = target
-        subtask = self.settings.instruction_template.format(target=target)
+        if isinstance(target, TaskInput):
+            subtask, queries = target.instruction.strip(), target.target_queries
+            if target.target:
+                self.last_target = target.target
+            # A web task is one literal instruction for both VLA and Monitor.
+            # Never alias it through an unrelated training prompt.
+            options = {"prompt_mode": "text"}
+        else:
+            target = target.strip() or self.last_target
+            if not target:
+                raise ValueError("Enter a target before reusing it")
+            self.last_target = target
+            subtask = self.settings.instruction_template.format(target=target)
+            queries, options = [target], {}
         # Allocate before the network call, so cancellation works even if the
         # execute response is lost or startup is still waiting for reference.
         self.identity = {"execution_id": "exec-" + uuid4().hex}
@@ -155,7 +165,9 @@ class SimpleRobotLoop:
         try:
             self.write(f"[executing] {subtask}")
             data = self._call(self.execute_tool, {
-                **self.identity, "subtask": subtask, "subtask_index": 0, "target_queries": [target],
+                **self.identity, "subtask": subtask, "subtask_index": 0,
+                **({"target_queries": queries} if queries is not None else {}),
+                **({"options": options} if options else {}),
             })
             if data.get("execution_id") != self.identity["execution_id"] or not data.get("monitor_id"):
                 raise RuntimeError("execute returned missing or mismatched execution/monitor IDs")
@@ -214,14 +226,16 @@ class SimpleRobotLoop:
         self.validate_tools()
         while True:
             try:
-                target = self.read_input(f"[ready] 输入目标物体（回车复用 {self.last_target or '未设置'}，q 退出）> ").strip()
+                target = self.read_input(f"[ready] 输入目标物体（回车复用 {self.last_target or '未设置'}，q 退出）> ")
             except (EOFError, KeyboardInterrupt):
                 return
-            if target.lower() in {"q", "quit", "exit"}:
-                return
-            if not target and not self.last_target:
-                self.write("[ready] 尚无上一次目标，请先输入目标物体")
-                continue
+            if isinstance(target, str):
+                target = target.strip()
+                if target.lower() in {"q", "quit", "exit"}:
+                    return
+                if not target and not self.last_target:
+                    self.write("[ready] 尚无上一次目标，请先输入目标物体")
+                    continue
             try:
                 self.run_cycle(target)
             except KeyboardInterrupt:
@@ -257,6 +271,8 @@ def main(argv: list[str] | None = None) -> int:
                 args.runtime_url or runtime_url or os.environ.get("DUAL_FRANKA_RUNTIME_URL") or "http://127.0.0.1:8767",
                 config.simple_loop.instruction_template,
                 last_target=config.simple_loop.default_target or "",
+                instruction_templates=config.simple_loop.instruction_templates,
+                allow_full_instruction=True,
             )
         elif input_source != "terminal":
             raise ValueError("simple_loop.input_source must be terminal or web")

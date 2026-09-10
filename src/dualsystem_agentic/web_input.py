@@ -5,16 +5,20 @@ import time
 import urllib.error
 import urllib.request
 from uuid import uuid4
+from dualsystem_agentic.task_input import TaskInput
 
 
 class WebTargetInput:
-    def __init__(self, runtime_url, instruction_template, *, last_target="", timeout=5.0):
+    def __init__(self, runtime_url, instruction_template, *, last_target="", timeout=5.0,
+                 instruction_templates=None, allow_full_instruction=False):
         if not runtime_url.startswith(("http://", "https://")):
             raise ValueError("web input requires an HTTP Robot Runtime URL")
         self.url = runtime_url.rstrip("/")
         self.instruction_template = instruction_template
         self.last_target = last_target
         self.timeout = timeout
+        self.instruction_templates = instruction_templates or {}
+        self.allow_full_instruction = allow_full_instruction
 
     def _request(self, method, path, payload=None):
         request = urllib.request.Request(self.url + path, method=method,
@@ -35,12 +39,19 @@ class WebTargetInput:
     def __call__(self, prompt):
         request_id = uuid4().hex
         path = f"/manual/input/{request_id}"
-        print(f"[ready] 在 {self.url}/manual 输入目标物体；Ctrl+C 退出", flush=True)
+        print(f"[ready] 在 {self.url}/manual 输入本轮任务；Ctrl+C 退出", flush=True)
         try:
             self._request("POST", "/manual/input/open", {"request_id": request_id,
-                "instruction_template": self.instruction_template, "last_target": self.last_target})
+                "instruction_template": self.instruction_template, "last_target": self.last_target,
+                "instruction_templates": self.instruction_templates,
+                "allow_full_instruction": self.allow_full_instruction})
             while True:
                 result = self._request("GET", path)
+                if result.get("task") is not None:
+                    task = TaskInput.from_payload(result["task"])
+                    if task.target:
+                        self.last_target = task.target
+                    return task
                 if result.get("target") is not None:
                     self.last_target = result["target"]
                     return self.last_target

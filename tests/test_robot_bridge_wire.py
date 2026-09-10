@@ -192,7 +192,11 @@ def test_json_protocol_rejects_unknown_action_without_affecting_scheduler(stack)
         client.close()
 
 
-def test_manual_bridge_clicks_use_stock_scheduler_controls(stack):
+@pytest.mark.parametrize("instruction,options", [
+    ("pick cup", {}),
+    ("把红杯放到盒子旁。\n然后松开夹爪。", {"prompt_mode": "text"}),
+])
+def test_manual_bridge_clicks_use_stock_scheduler_controls(stack, instruction, options):
     from fastapi.testclient import TestClient
     from robot_runtime.adapters.manual_bridge.robot_driver import ManualBridgeRobotDriver
     from robot_runtime.adapters.dual_franka.monitor_provider import LocalMemoryMonitorProvider
@@ -203,9 +207,15 @@ def test_manual_bridge_clicks_use_stock_scheduler_controls(stack):
     driver = ManualBridgeRobotDriver(scheduler_url=control_url, robot_url=robot_url,
                                     operator_timeout_s=3, start_delay_s=0,
                                     stop_delay_s=.01, reset_delay_s=.1)
+    class RecordingMonitor(LocalMemoryMonitorProvider):
+        def start(self, execution, request):
+            self.instruction = request.subtask
+            self.queries = request.target_queries
+            return super().start(execution, request)
+    monitor = RecordingMonitor()
     runtime = RobotRuntime(robot_type="x1pro", robot_driver=driver,
                            camera_provider=RobotBridgeCameraProvider(robot_url),
-                           monitor_provider=LocalMemoryMonitorProvider())
+                           monitor_provider=monitor)
     with TestClient(create_app(runtime)) as client, ThreadPoolExecutor() as pool:
         state = client.get("/manual/bridge/status").json()["data"]["state"]
         assert state["scheduler"] == "OpenPiScheduler" and state["single_step"]
@@ -216,11 +226,13 @@ def test_manual_bridge_clicks_use_stock_scheduler_controls(stack):
             assert pending["action"] == action
             assert client.post("/manual/action", json={"request_id": pending["request_id"]}).status_code == 200
 
-        start = pool.submit(runtime.create_execution, {"execution_id": "one", "subtask": "pick cup"})
+        start = pool.submit(runtime.create_execution, {"execution_id": "one", "subtask": instruction,
+                                                       "options": options, "target_queries": ["red cup"]})
         click("execute")
         assert start.result(3).driver_result["executed"]
         assert scheduler.run_iteration() == "ok"
-        assert policy.prompts == ["pick cup"] and len(robot.executed) == 1
+        assert policy.prompts == [instruction] and len(robot.executed) == 1
+        assert monitor.instruction == instruction and monitor.queries == ["red cup"]
         stop = pool.submit(runtime.stop)
         click("stop")
         assert stop.result(3)["stopped"] and scheduler._single_step
@@ -230,3 +242,24 @@ def test_manual_bridge_clicks_use_stock_scheduler_controls(stack):
         scheduler.build_obs_request()
         assert reset.result(3)["reset"] and robot.homed == 1
         assert client.get("/observations/latest/metadata").status_code == 200
+
+
+def test_text_prompt_change_invalidates_an_inflight_prediction(stack):
+    robot, policy, scheduler, _, control_url = stack
+    control = BridgeClient(control_url, json_protocol=True)
+    with ThreadPoolExecutor() as pool:
+        try:
+            policy.release.clear()
+            iteration = pool.submit(scheduler.run_iteration)
+            assert policy.entered.wait(1)
+            control.call({"cmd": "action", "name": "set_prompt_text", "args": {"prompt": "a new task"}})
+            policy.release.set()
+            assert iteration.result(3) == "skip"
+            assert not robot.executed
+            control.call({"cmd": "action", "name": "toggle_single_step"})
+            assert scheduler.run_iteration() == "ok"
+            assert policy.prompts[-1] == "a new task" and len(robot.executed) == 1
+        finally:
+            policy.release.set()
+            scheduler._step_event.set()
+            control.close()

@@ -8,6 +8,9 @@
 
 Manual 真机部署的环境安装、SSH 转发、配置与逐终端启动步骤见 [manual_start.md](docs/manual_start.md)。
 
+manual_bridge 的网页模板选择、完整 instruction 输入及 VLA/VLM 同文本传递见
+[自定义指令说明](docs/manual_bridge_instructions.md)。
+
 ## 整体功能
 
 一句话：系统围绕一个全流程 loop 循环运行：获取用户长程任务，大脑 VLM 根据当前环境图像规划子任务，`execute` 执行子任务，`monitor` 监控结果，并用 monitor 状态驱动下一轮决策。

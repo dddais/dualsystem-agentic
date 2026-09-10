@@ -47,6 +47,8 @@ def main():
     parser.add_argument("--monitor-repo", default=str(ROOT.parent / "Robo-Dopamine-delivery"))
     parser.add_argument("--screenshot", default="/tmp/manual-dashboard.png")
     parser.add_argument("--driver", choices=["manual", "manual_bridge"], default="manual")
+    parser.add_argument("--input-mode", choices=["template", "instruction"], default="template")
+    parser.add_argument("--template", default="default")
     args = parser.parse_args()
     delivery = Path(args.monitor_repo).resolve()
     sys.path.insert(0, str(delivery))
@@ -65,7 +67,10 @@ def main():
     from robot_runtime.core.runtime import RobotRuntime
     from dualsystem_agentic.config import load_config
 
-    instruction = load_config(ROOT / "examples/config.simple_loop.manual.yaml").simple_loop.instruction_template.format(target="carrot")
+    settings = load_config(ROOT / "examples/config.simple_loop.manual.yaml").simple_loop
+    templates = {"default": settings.instruction_template, **settings.instruction_templates}
+    instruction = ("把 carrot 放到 {box} 旁。\n然后松开夹爪。" if args.input_mode == "instruction"
+                   else templates[args.template].format(target="carrot"))
 
     class SimulatedCamera:
         count = 0
@@ -87,6 +92,8 @@ def main():
             time.sleep(.2)
             results = []
             for sample in samples:
+                assert sample["task"] == instruction
+                assert sample["target_queries"] == ["carrot"]
                 with Image.open(sample["image"][5]) as image:
                     size = list(image.size)
                 results.append({**sample, "pred": "<score>+20%</score>", "valid": True,
@@ -102,7 +109,7 @@ def main():
         backend, scheduler, robot = bridge(prompt_map={instruction: "pick carrot"})
         scheduler.state.update(scheduler="SimulatedOpenPiScheduler", iteration=0,
                                latency_step=0, move_steps=2, recording=False, person="")
-        scheduler.state["actions"] += ["toggle_recording", "set_person", "step", "adjust_latency"]
+        scheduler.state["actions"] += ["toggle_recording", "set_person", "step", "adjust_latency", "set_prompt_text"]
         original_call = scheduler.call
         def scheduler_call(request):
             name = request.get("name")
@@ -112,6 +119,8 @@ def main():
                 scheduler.state["person"] = request["args"]["person"]
             elif name == "adjust_latency":
                 scheduler.state["latency_step"] += request["args"]["delta"]
+            elif name == "set_prompt_text":
+                scheduler.state["prompt"] = request["args"]["prompt"]
             return original_call(request)
         scheduler.call = scheduler_call
         driver = ManualBridgeRobotDriver(operator_timeout_s=20, bridge_driver=backend, control_client=scheduler)
@@ -150,11 +159,19 @@ def main():
                         page.locator("#bridge-person").fill("browser-test")
                         page.locator("#bridge-set-person").click()
                     original_prompt = httpx.get(runtime_url + "/manual/status").json()["data"]["input"]["request_id"]
-                    page.locator("#target").fill("carrot")
+                    if args.input_mode == "instruction":
+                        page.locator("#mode-instruction").click()
+                        page.locator("#full-instruction").fill(instruction)
+                        page.locator("#target-queries").fill("carrot")
+                    else:
+                        page.locator("#instruction-template").select_option(args.template)
+                        page.locator("#target").fill("carrot")
                     expect(page.locator("#task-preview")).to_have_text(instruction)
+                    page.screenshot(path=args.screenshot.replace(".png", "-input.png"), full_page=True)
                     page.locator("#submit-target").click()
                     expect(page.locator("#ack")).to_have_text("启动 VLA" if integrated else "已开始", timeout=10000)
                     expect(page.locator("#submit-target")).to_be_disabled()
+                    assert httpx.get(runtime_url + "/manual/status").json()["data"]["execution"]["subtask"] == instruction
                     page.locator("#ack").click()
                     page.locator("#view-grm").click()
                     expect(page.locator("#note-cam_high")).to_contain_text("97.0%", timeout=10000)
@@ -202,6 +219,8 @@ def main():
                     assert httpx.get(runtime_url + "/manual/status").json()["data"]["input"]["request_id"] == ready_prompt
                     assert not errors, errors
                     if integrated:
+                        assert scheduler.state["prompt"] == instruction
+                        assert not any(c.get("name") == "set_prompt" for c in scheduler.calls)
                         assert [c.get("name") for c in scheduler.calls].count("homing") == 1
                         assert scheduler.state["single_step"] and scheduler.state["person"] == "browser-test"
                         assert len(robot.calls) == 4

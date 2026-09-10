@@ -7,7 +7,7 @@ const actions = {
   reset: ["恢复初始状态", "请在原系统让机械臂归位，完成后点击“已归位”。", "已归位"]
 };
 const bridgeActions = {
-  execute: ["开始任务", "参考帧已就绪。点击后选择匹配的训练指令并启动 VLA，随后自动激活评分。", "启动 VLA"],
+  execute: ["开始任务", "参考帧已就绪。点击后设置本轮指令并启动 VLA，随后自动激活评分。", "启动 VLA"],
   stop: ["停止任务", "点击后暂停 Scheduler、清理动作队列，完成后自动进入归位阶段。", "停止 VLA"],
   reset: ["恢复初始状态", "点击后执行原系统 homing，等待配置的归位时间后返回 ready。", "执行归位"]
 };
@@ -15,6 +15,7 @@ let bridgeStatus = null, bridgeConnected = false, bridgeSending = false, sending
 let status = null, connected = false, view = "live", sendingTarget = false, sendingAck = false;
 let inputId = null, imageEpoch = 0, imageKey = "", lastLive = 0, displayedMonitor = null;
 let historyId = null, history = [];
+let inputMode = "template";
 const percent = value => typeof value === "number" && Number.isFinite(value) ? `${(value * 100).toFixed(1)}%` : "—";
 
 async function request(path, payload, method) {
@@ -27,15 +28,21 @@ async function request(path, payload, method) {
 }
 
 function isReady() {
-  return connected && status?.input && status.input.target === null && !status.active_execution_id
+  return connected && status?.input && status.input.target === null && !status.input.task && !status.active_execution_id
     && !status.resetting && !status.estop_latched && !status.pending;
 }
 
 function taskPreview() {
   const prompt = status?.input;
   if (!prompt) return;
+  if (prompt.task) { $("task-preview").textContent = prompt.task.instruction; return; }
+  if (inputMode === "instruction" && prompt.input_modes?.includes("instruction")) {
+    $("task-preview").textContent = $("full-instruction").value.trim() || "输入完整指令后，将原样用于本轮任务。";
+    return;
+  }
   const target = $("target").value.trim() || prompt.last_target;
-  $("task-preview").textContent = target ? prompt.instruction_template.replaceAll("{target}", target)
+  const template = prompt.instruction_templates?.[$("instruction-template").value] || prompt.instruction_template;
+  $("task-preview").textContent = target ? template.replace(/\{\{|\}\}|\{target\}/g, token => token === "{target}" ? target : token[0])
     : "输入目标后会显示本轮完整指令。";
 }
 
@@ -45,20 +52,39 @@ function renderControls() {
   const label = pending && (integrated ? bridgeActions : actions)[pending.action];
   const busy = integrated && pending && pending.phase !== "waiting";
   const ready = isReady();
+  const advanced = status?.input?.input_modes?.includes("instruction");
+  const submitted = status?.input && (status.input.task || status.input.target !== null);
   $("target").disabled = !ready || sendingTarget;
   $("submit-target").disabled = !ready || sendingTarget;
-  $("submit-target").textContent = status?.input && status.input.target !== null ? "已提交，等待 loop" : "提交目标";
+  $("submit-target").textContent = submitted ? "已提交，等待 loop" : advanced ? "提交任务" : "提交目标";
   if (status?.input && inputId !== status.input.request_id) {
     inputId = status.input.request_id;
     $("target").value = "";
+    $("full-instruction").value = "";
+    $("target-queries").value = "";
     $("target-error").textContent = "";
     $("target").placeholder = status.input.last_target ? `留空复用 ${status.input.last_target}` : "例如 carrot / white cube";
   }
+  if (status?.input?.task) inputMode = status.input.task.mode;
+  $("input-modes").hidden = !advanced;
+  $("template-choice").hidden = !advanced;
+  $("template-fields").hidden = advanced && inputMode === "instruction";
+  $("instruction-fields").hidden = !advanced || inputMode !== "instruction";
+  $("instruction-destination").hidden = !advanced || !integrated;
+  $("mode-template").setAttribute("aria-pressed", String(inputMode === "template"));
+  $("mode-instruction").setAttribute("aria-pressed", String(inputMode === "instruction"));
+  for (const id of ["mode-template", "mode-instruction", "instruction-template", "full-instruction", "target-queries"]) $(id).disabled = !ready || sendingTarget;
+  if (advanced) {
+    const templates = status.input.instruction_templates;
+    const previous = status.input.task?.template_id || $("instruction-template").value;
+    const selected = Object.hasOwn(templates, previous) ? previous : "default";
+    selectOptions("instruction-template", Object.entries(templates).map(([name]) => [name, name === "default" ? "默认模板" : name]), selected);
+  }
   $("phase").textContent = !connected ? "连接中断" : ready ? "ready" : pending ? label?.[0] || "人工操作"
-    : status?.input?.target ? "准备任务" : status?.active_execution_id ? "执行中" : "等待 loop";
+    : submitted ? "准备任务" : status?.active_execution_id ? "执行中" : "等待 loop";
   $("target-hint").textContent = ready ? "提交后先准备参考帧，再提示人工开始。"
     : status?.active_execution_id || pending ? "本轮停止、归位完成后，可输入下一个目标。"
-    : status?.input?.target ? "目标已提交，请等待参考帧准备。"
+    : submitted ? "任务已提交，请等待参考帧准备。"
     : "等待使用 web 输入的 loop 进入 ready。终端模式可加 --input-source web 重启。";
   taskPreview();
   $("action-title").textContent = label ? label[0] : status?.active_execution_id ? "等待评分或准备参考帧" : "等待任务";
@@ -86,14 +112,34 @@ function renderControls() {
 }
 
 $("target").addEventListener("input", taskPreview);
+$("full-instruction").addEventListener("input", taskPreview);
+$("instruction-template").addEventListener("change", taskPreview);
+$("mode-template").onclick = () => { inputMode = "template"; renderControls(); };
+$("mode-instruction").onclick = () => { inputMode = "instruction"; renderControls(); };
 $("target-form").addEventListener("submit", async event => {
   event.preventDefault();
   if (!isReady() || sendingTarget) return;
   const requestId = status.input.request_id;
+  const advanced = status.input.input_modes?.includes("instruction");
+  const payload = {request_id: requestId};
+  if (advanced) {
+    payload.mode = inputMode;
+    if (inputMode === "template") {
+      payload.template_id = $("instruction-template").value;
+      payload.target = $("target").value;
+    } else {
+      payload.instruction = $("full-instruction").value;
+      const queries = $("target-queries").value.split(/\r?\n/).map(value => value.trim()).filter(Boolean);
+      if (queries.length) payload.target_queries = queries;
+    }
+  } else payload.target = $("target").value;
   sendingTarget = true; renderControls();
   try {
-    await request("/manual/target", {request_id: requestId, target: $("target").value});
-    if (status?.input?.request_id === requestId) status.input.target = $("target").value.trim() || status.input.last_target;
+    const result = await request(advanced ? "/manual/task" : "/manual/target", payload);
+    if (status?.input?.request_id === requestId) {
+      if (advanced) status.input.task = result.task;
+      else status.input.target = result.target;
+    }
     $("target-error").textContent = "";
   } catch (error) { $("target-error").textContent = error.message; }
   finally { sendingTarget = false; renderControls(); }
@@ -328,7 +374,8 @@ function renderBridge() {
   $("bridge-connection").textContent = bridgeConnected ? "Scheduler 已连接" : "Scheduler 未连接";
   $("bridge-summary").textContent = `${s.scheduler || "Scheduler"} · 迭代 ${s.iteration ?? "—"} · ${s.mode || (s.single_step ? "单步 / 暂停" : "连续运行")}${s.homing_pending ? " · 归位中" : ""}`;
   $("bridge-selection").textContent = bridgeStatus?.selection_error || (bridgeStatus?.selection
-    ? `本轮启动将使用：${bridgeStatus.selection.index}. ${bridgeStatus.selection.prompt}` : "开始时根据本轮 instruction / prompt_map 自动选择训练指令。");
+    ? `本轮启动将使用：${bridgeStatus.selection.index == null ? "" : bridgeStatus.selection.index + ". "}${bridgeStatus.selection.prompt}`
+    : "本轮提交的完整指令将在开始时设置到 VLA。");
   for (const row of document.querySelectorAll("[data-support]")) row.hidden = !supported.includes(row.dataset.support);
   selectOptions("bridge-prompt", (s.prompts || []).map((prompt, i) => [i, `${i}. ${prompt}`]), (s.prompts || []).indexOf(s.prompt));
   selectOptions("bridge-phase", Array.from({length: 10}, (_, i) => [i, `${i} ${s.phase_labels?.[i] || ""}`]), s.phase);

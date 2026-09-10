@@ -10,10 +10,9 @@ robot:
   start_delay_s: 0.5
   stop_delay_s: 1.0
   reset_delay_s: 8.0
-  # Empty map: require an exact match against scheduler status.prompts.
-  # Optional aliases map the loop instruction to a prompt index or text:
-  # prompt_map:
-  #   pick the carrot and put it on yellow plate: 0
+  # Send the same literal instruction to VLA and VLM; requires updated Scheduler.
+  prompt_mode: text
+  # Used only by legacy fixed-prompt executions; web tasks always use text.
   prompt_map: {}
 
 camera:

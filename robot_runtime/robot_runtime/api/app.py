@@ -132,7 +132,9 @@ def create_app(runtime: RobotRuntime) -> FastAPI:
         try:
             check_input_ready()
             return _ok(target_input.open(body.get("request_id"), body.get("instruction_template"),
-                                         body.get("last_target", "")))
+                                         body.get("last_target", ""),
+                                         instruction_templates=body.get("instruction_templates"),
+                                         allow_full_instruction=body.get("allow_full_instruction", False)))
         except ValueError as exc:
             return _fail(str(exc), status=409)
 
@@ -171,6 +173,17 @@ def create_app(runtime: RobotRuntime) -> FastAPI:
             return _fail(str(exc), status=400)
         except Exception as exc:
             return _fail(str(exc), status=503)
+
+    @app.post("/manual/task")
+    def manual_task(body: dict[str, Any]):
+        try:
+            check_input_ready()
+            return _ok(target_input.submit_task(
+                body.get("request_id"), mode=body.get("mode"),
+                template_id=body.get("template_id", "default"), target=body.get("target", ""),
+                instruction=body.get("instruction", ""), target_queries=body.get("target_queries")))
+        except ValueError as exc:
+            return _fail(str(exc), status=409)
 
     @app.post("/manual/ack")
     def manual_ack(body: dict[str, Any]):
@@ -289,6 +302,7 @@ def create_app(runtime: RobotRuntime) -> FastAPI:
                     "GET  /manual/input/{request_id}",
                     "DELETE /manual/input/{request_id}",
                     "POST /manual/target",
+                    "POST /manual/task",
                     "GET  /manual/monitor/frames/{frame_set_id}/{camera}.png",
                     "POST /executions",
                     "POST /monitors/status",
@@ -326,6 +340,7 @@ def build_runtime_from_config(config: dict[str, Any]) -> RobotRuntime:
             robot_url=robot_config.get("robot_url", "ws://127.0.0.1:9946"),
             timeout_s=robot_config.get("timeout_s", 5.0),
             prompt_map=robot_config.get("prompt_map"),
+            prompt_mode=robot_config.get("prompt_mode", "fixed"),
             stop_delay_s=robot_config.get("stop_delay_s", 1.0),
             reset_delay_s=robot_config.get("reset_delay_s", 8.0),
             start_delay_s=robot_config.get("start_delay_s", 0.5))

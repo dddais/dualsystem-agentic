@@ -105,6 +105,7 @@ class LoggingConfig:
 @dataclass
 class SimpleLoopConfig:
     instruction_template: str = "pick the {target} and put it on yellow plate"
+    instruction_templates: dict[str, str] = field(default_factory=dict)
     default_target: str | None = None
     first_result_timeout_s: float = 120.0
     result_timeout_s: float = 120.0

@@ -5,6 +5,7 @@
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Manual · 机器人操作台</title>
 <style>
+textarea{font:inherit;width:100%;min-height:100px;resize:vertical;border:1px solid #becdd0;border-radius:8px;padding:10px;color:var(--ink)}textarea:disabled{opacity:.48}.task-field{margin-top:12px}.task-field select{width:100%}
 :root{color-scheme:light;--ink:#18303a;--muted:#697d85;--line:#dce5e7;--accent:#087f80;--soft:#eaf5f2;--red:#b63232}
 *{box-sizing:border-box}body{margin:0;background:#f3f6f6;color:var(--ink);font:14px/1.6 system-ui,-apple-system,"Segoe UI",sans-serif}
 header,main{max-width:1560px;margin:auto;padding:24px 32px}header{display:flex;justify-content:space-between;align-items:center;border-bottom:1px solid var(--line)}
@@ -33,7 +34,13 @@ button{cursor:pointer}button.primary{background:var(--accent);color:white;border
 <main>
 <aside class="sidebar">
 <section class="panel"><div class="panel-top"><h2>目标任务</h2><span class="badge" id="phase">等待连接</span></div>
-<form id="target-form"><label for="target">目标物体</label><input id="target" type="text" maxlength="200" placeholder="例如 carrot / white cube" autocomplete="off" disabled>
+<form id="target-form">
+<div id="input-modes" class="segments" aria-label="任务输入方式" hidden><button id="mode-template" type="button" aria-pressed="true">模板填目标</button><button id="mode-instruction" type="button" aria-pressed="false">完整指令</button></div>
+<div id="template-fields"><div id="template-choice" class="task-field" hidden><label for="instruction-template">预设模板</label><select id="instruction-template" disabled></select></div>
+<div class="task-field"><label for="target">目标物体</label><input id="target" type="text" maxlength="200" placeholder="例如 carrot / white cube" autocomplete="off" disabled></div></div>
+<div id="instruction-fields" hidden><div class="task-field"><label for="full-instruction">完整 instruction</label><textarea id="full-instruction" maxlength="2000" placeholder="例如 Pick up the red cup and place it beside the box." disabled></textarea></div>
+<div class="task-field"><label for="target-queries">SAM3 检测目标（可选，每行一个）</label><textarea id="target-queries" style="min-height:64px" maxlength="1607" placeholder="red cup" disabled></textarea><p class="hint">复杂或中文指令建议填写英文物体名；留空时由 Monitor 按现有规则提取。</p></div></div>
+<p id="instruction-destination" class="hint" hidden>最终指令将同时发送给 VLA 和 VLM Monitor。</p>
 <p id="task-preview" class="task-preview">Loop 进入 ready 后，可在这里提交目标。</p><button id="submit-target" class="primary" type="submit" disabled>提交目标</button></form>
 <p id="target-hint" class="hint">正在检查 loop 状态…</p><p id="target-error" class="error" role="alert"></p>
 </section>
@@ -59,7 +66,7 @@ button{cursor:pointer}button.primary{background:var(--accent);color:white;border
 <div class="bridge-row" data-support="toggle_single_step"><button id="bridge-single-step" data-action="toggle_single_step">单步模式</button><button id="bridge-step" data-action="step">下一步</button></div>
 <div class="bridge-row" data-support="set_gripper_map"><label for="bridge-scale">夹爪 scale</label><input id="bridge-scale" type="number" step="0.1"><label for="bridge-offset">offset</label><input id="bridge-offset" type="number" step="0.1"><button id="bridge-gripper" data-action="set_gripper_map">应用映射</button></div>
 </div>
-<p class="hint">开始、停止、归位使用左侧本轮操作按钮。模式切换和单步在任务开始后可用；执行期间锁定训练指令。</p>
+<p class="hint">开始、停止、归位使用左侧本轮操作按钮。模式切换和单步在任务开始后可用；执行期间锁定本轮指令。</p>
 <p id="bridge-error" class="error" role="alert"></p>
 <details id="bridge-debug" style="margin-top:16px"><summary>运行日志</summary><div class="bridge-row" style="margin-top:12px"><select id="bridge-log-target" aria-label="日志来源"><option>scheduler</option><option>policy</option><option>robot</option><option>master</option></select><button id="bridge-refresh-log">刷新日志</button></div><pre id="bridge-log" class="bridge-log">展开后加载日志。</pre></details>
 </section>

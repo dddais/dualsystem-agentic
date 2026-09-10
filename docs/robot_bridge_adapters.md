@@ -2,14 +2,16 @@
 
 三个 RobotDriver 使用同一套 MCP、Runtime HTTP、GRM Monitor 接口。相机独立配置为
 `camera.provider: robot_bridge`，直接读取已运行的 Robot Server，不再经过 `/tmp/img`。
-本实现不修改 robot-bridge 源码，不启动第二个 SDK controller，不加载第二份 VLA。
+Runtime 复用已有 SDK controller 和 VLA。自定义 instruction 需要更新 robot-bridge
+的 Scheduler 文本 prompt 接口，详见 [模板与完整指令](manual_bridge_instructions.md)。
 
 ## 部署准备
 
 - 服务器：沿用 VLA Policy Server，以及 GRM Monitor / SAM3。
 - 从臂端：沿用 Robot Server、Scheduler；新增 Robot Runtime 和上游 loop。
 - Scheduler 可以仍运行在原机器，Runtime 配置中的 `scheduler_url` 指向它。
-- `manual_bridge` 和自动模式要求 Scheduler 控制端口已开启，且 checkpoint 有固定 `prompts` 集合。
+- `manual_bridge` 和自动模式要求 Scheduler 控制端口已开启。旧 `fixed` 模式需要
+  checkpoint 有固定 `prompts` 集合；`text` 模式需要 Scheduler 支持 `set_prompt_text`。
   保留原 Scheduler 启动参数，增加 `--control-port 8088`。`openpi` 与
   `openpi_takeover` 都支持；无需为普通从臂部署额外启动主臂。
 
@@ -98,8 +100,8 @@ PYTHONPATH=src python examples/run_simple_robot.py \
 
 只需打开 `http://<Runtime主机>:8767/manual`：
 
-1. ready 时输入目标、提交；等待 GRM 起始参考帧。
-2. 点击“启动 VLA”：暂停并清队列、选择本轮匹配的训练 prompt、启动 Scheduler；
+1. ready 时选择模板并填目标，或输入完整 instruction，提交后等待 GRM 起始参考帧。
+2. 点击“启动 VLA”：暂停并清队列、设置本轮 instruction、启动 Scheduler；
    等 `start_delay_s` 后激活 GRM 评分。
 3. 本轮结束后点击“停止 VLA”：暂停并清理队列，等 `stop_delay_s` 后再次清队列；
    成功后 loop 提示归位。
@@ -117,10 +119,11 @@ PYTHONPATH=src python examples/run_simple_robot.py \
 loop 仍根据 Monitor 结果进入停止、归位阶段。执行期间不能换训练 prompt，避免
 VLA 与 GRM 的任务指令不一致。录制、phase 等辅助设置不会放行人工交接。
 
-启动时始终按 instruction / `robot.prompt_map` 选择本轮 prompt，页面会显示实际
-将发送的训练文本；ready 阶段的手动 prompt 选择不能覆盖该匹配规则。
-上游模板与训练文本不一致时，按下文配置 `prompt_map`；缺失匹配会显示错误并禁用
-启动按钮，不会默认启动第一个任务。需要在真机前确认两段指令语义一致。
+新网页支持模板和完整指令，最终 instruction 以同一文本交给 VLA 和 VLM，不经
+`prompt_map` 替换。新增配置使用 `prompt_mode: text`；需要同步更新并重启 Scheduler。
+页面会显示实际发送的文本，ready 阶段手选预置 prompt 不能覆盖本轮 instruction。
+模板配置、SAM3 检测目标和更新步骤见 [模板与完整指令](manual_bridge_instructions.md)。
+旧 `fixed` 模式仍按下文的 instruction / `prompt_map` 规则匹配预置任务。
 
 “立即软件停止”使用 Runtime 的急停入口与独立 bridge 连接，可以取消等待点击、
 启动或归位过程，不需要再次人工确认；停止后锁存，完成归位后才允许下一次执行。
@@ -132,6 +135,7 @@ HTTP 客户端可使用：
 |---|---|
 | `GET /manual/status` | `control_mode: bridge`；`pending.phase` 为 waiting / queued / running，`last_operation` 保存完成结果或错误 |
 | `POST /manual/action` | 提交 `{"request_id":"<本轮待操作ID>"}`，触发该操作；重复 ID 不重发命令，过期／未知 ID 返回 409 |
+| `POST /manual/task` | ready 阶段提交模板目标或完整指令，详见自定义指令文档 |
 | `GET /manual/bridge/status` | Scheduler 当前状态、本轮匹配 prompt、Runtime 当前允许的辅助动作 |
 | `POST /manual/bridge/action` | `{"name":"set_phase","args":{"phase":2}}` 等辅助控制；后端检查本轮阶段，禁止绕过交接直接 homing |
 | `GET /manual/bridge/log?target=scheduler&lines=200` | scheduler / policy / robot / master 日志，经 Runtime 转发 |
@@ -284,6 +288,5 @@ manual_bridge 的测试还覆盖点击后才发命令、参考帧与 Monitor 激
 显示执行中、重复／旧按钮不影响下一操作、失败不重发、取消与启动竞态、急停锁存、
 辅助控制阶段检查，以及原生 robot-bridge 控制面的完整开始／停止／归位流程。
 
-本次验证：全仓 209 项测试及 9 个子测试通过（含 4 项原生 robot-bridge 接口测试）；
 Runtime wheel 包含新 driver、配置和共享页面。浏览器脚本支持分别验证 `manual`
 与 `manual_bridge` 的真实 HTTP/MCP/Loop/Monitor 链路，模型和机器人使用模拟实现。

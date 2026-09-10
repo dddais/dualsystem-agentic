@@ -137,17 +137,16 @@ class ManualBridgeRobotDriver(ManualRobotDriver):
     def scheduler_status(self):
         state = self.bridge._state(self._control)
         with self._lock:
-            instruction = self._instruction
+            request = self._execute_args[0] if self._execute_args else None
         selection = None
         error = None
-        if instruction:
-            from robot_runtime.core.types import ExecutionRequest
+        if request:
             try:
-                index, prompt = self.bridge._prompt_index(ExecutionRequest(instruction), state)
-                selection = {"index": index, "prompt": prompt}
+                selection = self.bridge.prompt_selection(request, state)
             except ValueError as exc:
                 error = str(exc)
-        return {"state": state, "selection": selection, "selection_error": error}
+        return {"state": state, "selection": selection, "selection_error": error,
+                "prompt_mode": self.bridge.prompt_mode}
 
     def scheduler_action(self, name, args, *, cancelled=None):
         if name not in self.SETTINGS | self.MOTION:

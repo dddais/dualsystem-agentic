@@ -12,7 +12,7 @@ from .clients import BridgeClient, duration
 class RobotBridgeRobotDriver:
     def __init__(self, scheduler_url: str = "ws://127.0.0.1:8088", *,
                  robot_url: str = "ws://127.0.0.1:9946", timeout_s: float = 5.0,
-                 prompt_map: dict | None = None, stop_delay_s: float = 1.0,
+                 prompt_map: dict | None = None, prompt_mode: str = "fixed", stop_delay_s: float = 1.0,
                  reset_delay_s: float = 8.0, start_delay_s: float = 0.5,
                  scheduler_client=None, robot_client=None,
                  emergency_scheduler_client=None, emergency_robot_client=None):
@@ -27,6 +27,9 @@ class RobotBridgeRobotDriver:
         )):
             raise ValueError("prompt_map must map instructions to prompt strings or nonnegative indices")
         self.prompt_map = dict(prompt_map or {})
+        if prompt_mode not in {"fixed", "text"}:
+            raise ValueError("prompt_mode must be fixed or text")
+        self.prompt_mode = prompt_mode
         self._scheduler = scheduler_client or BridgeClient(scheduler_url, timeout_s=timeout_s, json_protocol=True)
         self._robot = robot_client or BridgeClient(robot_url, timeout_s=timeout_s)
         self._emergency_scheduler = emergency_scheduler_client or BridgeClient(
@@ -133,15 +136,32 @@ class RobotBridgeRobotDriver:
             raise ValueError(f"prompt index out of range: {index}")
         return index, prompts[index]
 
+    def prompt_selection(self, request, state):
+        mode = request.options.get("prompt_mode", self.prompt_mode)
+        if mode == "text":
+            if "set_prompt_text" not in state["actions"]:
+                raise ValueError("Scheduler lacks set_prompt_text; update robot-bridge and restart Scheduler for custom instructions")
+            prompt = request.subtask
+            if not isinstance(prompt, str) or not prompt.strip() or len(prompt) > 2000:
+                raise ValueError("instruction must be nonempty text (maximum 2000 characters)")
+            return {"mode": "text", "index": None, "prompt": prompt.strip(),
+                    "action": "set_prompt_text", "args": {"prompt": prompt.strip()}}
+        if mode != "fixed":
+            raise ValueError("prompt_mode must be fixed or text")
+        index, prompt = self._prompt_index(request, state)
+        return {"mode": "fixed", "index": index, "prompt": prompt,
+                "action": "set_prompt", "args": {"index": index}}
+
     def execute(self, request: ExecutionRequest, execution: ExecutionState, *, cancelled=None) -> dict:
         token = self._begin("execute", execution.execution_id, cancelled)
         try:
             state = self._state(self._scheduler)
-            index, prompt = self._prompt_index(request, state)
+            selection = self.prompt_selection(request, state)
+            index, prompt = selection["index"], selection["prompt"]
             with self._lock:
                 self._active_id = execution.execution_id
             self._park(self._scheduler, self._robot, token)
-            self._action(self._scheduler, "set_prompt", {"index": index}, token)
+            self._action(self._scheduler, selection["action"], selection["args"], token)
             state = self._state(self._scheduler)
             if state.get("prompt") != prompt:
                 raise RuntimeError("scheduler did not select the requested prompt")
@@ -155,6 +175,7 @@ class RobotBridgeRobotDriver:
             self._check_cancelled(token)
             return {"executed": True, "execution_id": execution.execution_id,
                     "prompt": prompt, "prompt_index": index, "provider": "robot_bridge",
+                    "prompt_mode": selection["mode"],
                     "completion_basis": "command_and_delay", "wait_s": self.start_delay_s}
         finally:
             self._finish(token)
@@ -194,6 +215,7 @@ class RobotBridgeRobotDriver:
     def status(self) -> dict:
         with self._lock:
             return {"provider": "robot_bridge", "scheduler_url": self.scheduler_url,
+                    "prompt_mode": self.prompt_mode,
                     "robot_url": self.robot_url, "active_execution_id": self._active_id,
                     "pending_action": self._pending[0] if self._pending else None,
                     "last_scheduler_state": dict(self._last_state)}
