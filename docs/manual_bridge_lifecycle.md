@@ -11,7 +11,7 @@
 | ready，已有保存指令 | 自主运行 A | 固定本轮 instruction，创建 execution / Monitor，准备参考帧 |
 | 准备参考帧 | 等待；可用空闲取消本轮 | 就绪后自动设置本轮指令、启动 VLA，等待启动延时，再激活 GRM，进入执行 |
 | 启动中 / 执行中 | 空闲 I | 取消本轮、暂停 Scheduler、清理动作队列，完成停止后关闭本轮 Monitor |
-| 执行中，loop 请求停止 | 空闲 I；或启用 auto_stop 自动处理 | 停止完成后等待恢复选择 |
+| 执行中，GRM 判定成功或失败 | auto_stop: false 时继续执行和评分；true 时自动停止 | false 保持执行中；true 停止后等待恢复选择 |
 | 等待恢复 | Homing H | 归位中，等待配置的归位时间后进入 ready |
 | 等待恢复 | 遥操作 T | 进入调整；VLA 自主运行和 GRM 评分保持停止 |
 | 调整中 | 空闲 I | 结束遥操作，清理动作队列并等待停止延时，进入 ready |
@@ -48,12 +48,21 @@ robot:
   auto_stop: false
 ```
 
-- `false`（默认）：loop 根据 Monitor 结果、异常或超时请求停止后，等待操作员选择空闲。
-- `true`：Runtime 收到本轮停止请求后直接发送空闲 / 暂停和清队列命令，不等待点击。
-  仍等待 `stop_delay_s` 后完成停止，再交给操作员选择归位或调整。
+- `false`（省略该配置时的默认值）：持续执行与监控。GRM 的成功、失败、双分支差异超阈值均只作为
+  当次评分结论；VLA 继续运行，GRM 继续产生新的图像、bbox 和分数，loop 保持 executing。
+  点击空闲 / I 才停止本轮，然后选择归位或遥操作调整。页面显示“GRM 判定：成功 / 失败 · 持续监控”。
+- `true`：GRM 仍在成功 / 失败时结束推理；loop 收到终态后请求停止，Runtime 自动发送空闲 / 暂停
+  和清队列命令，等待 `stop_delay_s` 后交给操作员选择归位或调整。
 
-它不自动开始下一轮，也不自动归位。执行中主动点击空闲始终立即请求停止，不受这个开关限制。
-页面会显示自动停止是否启用。停止包含软停止和配置延时，未新增实测停稳 / 姿态确认能力。
+`false` 的正常执行不会被 loop 的 `max_execution_s` 或 Runtime 的 `safety.max_execution_s`
+自动结束。首帧等待、评分停滞 / 过期、通信或启动失败仍沿用原有异常处理；软件急停仍然有效，
+等待开始 / 归位 / 调整的 `operator_timeout_s` 不变。此配置须重启 Runtime 生效，不动态更改进行中的任务。
+
+持续模式仍保留原来的进度累计与成功 / 失败窗口规则，但判定不再锁存；后续评分可以改变判定。
+开始新一轮才重置累计进度和 reference。录制会持续收集成功 / 失败之后的新评分，直到手动停止。
+
+两种模式都不自动开始下一轮或归位。页面会显示自动停止是否启用。
+停止包含软停止和配置延时，未新增实测停稳 / 姿态确认能力。
 
 ## Loop 和 MCP 配置
 
@@ -93,14 +102,20 @@ MCP 中继续使用 `DUAL_FRANKA_ENABLE_RESET: "true"`，同时开放 `reset_tas
 
 ## 部署与验证
 
-本次只修改 `dualsystem-agentic`。更新运行 **Runtime** 和 **loop / MCP** 的机器上的该仓库，
-重启这两个进程，并刷新 `/manual`。现有 Scheduler 已有 mode / homing 控制，无需为本次改动
-更新 `robot-bridge`、Robot Server、Policy Server 或 GRM Monitor。
+“持续监控”需要更新两处：
+
+1. Runtime 和 loop / MCP 所在机器更新 `dualsystem-agentic`，重启相关进程。
+2. GRM 服务器更新 `Robo-Dopamine-delivery`，重启 Monitor 服务，然后刷新 `/manual` 并开始新任务。
+
+Runtime 自动将 `auto_stop: false` 转成 Monitor 的逐任务 `continuous_monitoring: true`，无需额外
+编辑 Monitor YAML。旧 Monitor 未确认支持时，Runtime 会明确报错，不启动 VLA。
+Scheduler、robot-bridge、Policy Server 和 SAM3 无需为本次修改更新。
+原 manual、自动 robot_bridge 和 auto_stop: true 沿用终态结束流程。
 
 使用模拟硬件进行验证：
 
 ```bash
-python -m pytest tests/test_manual_bridge_lifecycle.py tests/test_manual_bridge.py tests/test_simple_loop.py
+python -m pytest tests/test_manual_continuous.py tests/test_manual_bridge_lifecycle.py tests/test_manual_bridge.py tests/test_simple_loop.py
 python tests/validate_manual_shortcuts.py
 python tests/validate_manual_dashboard.py --driver manual_bridge --input-mode instruction
 python tests/validate_manual_dashboard.py --driver manual_bridge --input-mode instruction --recovery teleop --auto-stop

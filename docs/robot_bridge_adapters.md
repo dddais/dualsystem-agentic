@@ -104,7 +104,8 @@ PYTHONPATH=src python examples/run_simple_robot.py \
 2. ready 时点击“自主运行 / 开始”（A），固定已保存的 instruction，准备 GRM 起始参考帧；
    就绪后设置本轮 instruction 并启动 Scheduler，等 `start_delay_s` 后激活 GRM 评分，无需再次点击。
 3. 点击“空闲 / 停止”（I），暂停并清队列，等 `stop_delay_s` 后再次清队列，结束本轮 Monitor。
-   可提前结束执行；loop 请求停止时也通过这个按钮处理。`robot.auto_stop: true` 则自动执行这一步。
+   `robot.auto_stop: false` 时，GRM 成功 / 失败只更新评分结论，VLA 和 GRM 持续运行，直到点击 I。
+   `robot.auto_stop: true` 时，loop 收到 GRM 终态后自动执行这一步。
 4. 停止后选择“Homing / 归位”（H），等 `reset_delay_s` 后返回 ready；或选择“遥操作 / 调整”（T），
    调整完成后再切空闲（I），停止遥操作并返回 ready。调整分支不发送 homing。
 5. 下一轮直接点击 A，持续复用已保存的 instruction 和检测目标，直到修改并再次保存。
@@ -161,8 +162,10 @@ Record 现支持同步保存 GRM 全量进度、视频关联信息和可下载�
 禁止切换 Prompt。`P` 同步切换 Scheduler 的 `digit_mode`，与 Scheduler UI / 终端
 共享状态。快捷键不会跳过参考帧准备或人工交接，也不会通过 `H` 直接发出裸 homing。
 
-本次指令复用及控制与恢复改动只需更新 `dualsystem-agentic`，重启 Runtime 和 loop / MCP，刷新 `/manual`。
-无需为本次改动更新 robot-bridge、Policy Server 或 Monitor。
+指令复用及控制与恢复功能更新 Runtime / loop 所在机器的 `dualsystem-agentic`；
+`auto_stop: false` 的持续监控还需要更新 GRM 服务器的 `Robo-Dopamine-delivery` 并重启 Monitor。
+重启 Runtime 和 loop / MCP，刷新 `/manual` 后开始新任务。无需更新 robot-bridge、Policy Server 或 SAM3。
+完整语义和异常处理见 [状态与自动停止规范](manual_bridge_lifecycle.md#可选自动停止)。
 可用 `python tests/validate_manual_shortcuts.py` 做浏览器回归检查（需 Playwright / Chromium，模拟硬件）。
 
 HTTP 客户端可使用：

@@ -70,7 +70,9 @@ def test_two_loop_cycles_use_vla_controls_and_fresh_monitors(auto_stop, recovery
             control(client, "homing", code=409)
             control(client, "autonomous")
             if not auto_stop:
-                pending_action(client, "stop")
+                eventually(lambda: runtime.manual_snapshot()["monitor"]["poll_count"] >= 4)
+                assert driver.status()["pending"] is None
+                assert loop.phase is SimplePhase.EXECUTING
                 assert scheduler.state["mode"] == "autonomous"
                 assert not cycle.done()
                 control(client, "idle")

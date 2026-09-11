@@ -41,9 +41,9 @@ class LocalMemoryMonitorProvider:
             execution_id=execution.execution_id,
             subtask=execution.subtask,
             subtask_index=execution.subtask_index,
-            status=self.default_status,
+            status=STATUS_RUNNING if request.options.get("continuous_monitoring") else self.default_status,
             message="local memory monitor placeholder",
-            result={"provider": "local_memory"},
+            result={"provider": "local_memory", "continuous_monitoring": request.options.get("continuous_monitoring", False), "status": self.default_status},
         )
         self._states[state.monitor_id] = state
         return state
@@ -51,7 +51,7 @@ class LocalMemoryMonitorProvider:
     def status(self, monitor: MonitorState) -> MonitorState:
         state = self._states.get(monitor.monitor_id, monitor)
         poll_count = state.poll_count + 1
-        status = state.status
+        status = state.result.get("status", state.status) if state.result.get("continuous_monitoring") else state.status
         progress = state.progress
         if self.auto_success_after_polls and poll_count >= self.auto_success_after_polls:
             status = STATUS_SUCCESS
@@ -59,9 +59,10 @@ class LocalMemoryMonitorProvider:
         refreshed = replace(
             state,
             poll_count=poll_count,
-            status=status,
+            status=STATUS_RUNNING if state.result.get("continuous_monitoring") else status,
             progress=progress,
             updated_at=time.time(),
+            result={**state.result, "status": status},
         )
         self._states[refreshed.monitor_id] = refreshed
         return refreshed
@@ -115,10 +116,14 @@ class RemoteHTTPMonitorProvider:
                 "task": execution.task,
                 "metadata": execution.metadata,
                 "defer_inference": True,
+                **({"continuous_monitoring": True} if request.options.get("continuous_monitoring") else {}),
                 **({"target_queries": request.target_queries} if request.target_queries is not None else {}),
             },
         )
-        return _monitor_from_payload(data, fallback=execution)
+        monitor = _monitor_from_payload(data, fallback=execution)
+        if request.options.get("continuous_monitoring") and monitor.result.get("continuous_monitoring") is not True:
+            raise RuntimeError("GRM Monitor does not support continuous_monitoring; update and restart Monitor for auto_stop: false")
+        return monitor
 
     def status(self, monitor: MonitorState) -> MonitorState:
         data = self._request(

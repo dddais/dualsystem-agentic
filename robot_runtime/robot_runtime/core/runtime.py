@@ -145,6 +145,9 @@ class RobotRuntime:
 
     def create_execution(self, payload: JsonDict) -> ExecutionState:
         request = ExecutionRequest.from_payload(payload)
+        # Runtime configuration owns this policy; callers cannot override auto_stop.
+        continuous = getattr(self.robot_driver, "auto_stop", None) is False
+        request.options = {**request.options, "continuous_monitoring": continuous}
         now = now_s()
         execution = ExecutionState(
             execution_id=request.execution_id or new_execution_id(),
@@ -154,7 +157,7 @@ class RobotRuntime:
             subtask_index=request.subtask_index,
             created_at=now,
             updated_at=now,
-            metadata=request.metadata,
+            metadata={**request.metadata, "continuous_monitoring": continuous},
         )
         with self._lock:
             if self._estop_latched:
@@ -226,10 +229,11 @@ class RobotRuntime:
                     execution.driver_result = dict(driver_result)
                     execution.updated_at = now_s()
                     self._monitors[monitor.monitor_id] = monitor
-                    timer = threading.Timer(self.max_execution_s, self._expire_execution, args=(execution.execution_id,))
-                    timer.daemon = True
-                    self._timers[execution.execution_id] = timer
-                    timer.start()
+                    if not continuous:
+                        timer = threading.Timer(self.max_execution_s, self._expire_execution, args=(execution.execution_id,))
+                        timer.daemon = True
+                        self._timers[execution.execution_id] = timer
+                        timer.start()
             if monitor.result.get("inference_enabled") is False:
                 if cancelled.is_set():
                     raise RuntimeError("execution cancelled before monitor activation")

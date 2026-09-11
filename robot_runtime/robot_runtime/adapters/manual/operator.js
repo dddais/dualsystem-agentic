@@ -257,7 +257,10 @@ function renderScore(monitor) {
   const hasScore = Number.isInteger(result.inference_step) && result.inference_step > 0;
   $("progress").textContent = hasScore ? percent(result.progress ?? monitor.progress) : "—";
   $("progress-bar").style.width = hasScore ? `${Math.max(0, Math.min(1, result.progress ?? monitor.progress)) * 100}%` : "0%";
-  $("score-status").textContent = hasScore ? ({running: "最近结果：进行中", success: "任务成功", failed: "任务失败"}[result.status] || result.status || "已有评分") : "等待评分";
+  const assessment = {running: "进行中", success: "成功", failed: "失败"}[result.status] || result.status || "已有评分";
+  $("score-status").textContent = !hasScore ? "等待评分" : result.continuous_monitoring && monitor.status === "running"
+    ? `GRM 判定：${assessment} · 持续监控`
+    : ({running: "最近结果：进行中", success: "任务成功", failed: "任务失败"}[result.status] || assessment);
   $("monitor-error").textContent = monitor?.error || result.error || "";
   const body = $("mode-scores"); body.replaceChildren();
   for (const [mode, data] of Object.entries(result.modes || {})) {
@@ -462,7 +465,7 @@ function renderBridge() {
   }
   $("bridge-auto-stop").textContent = status.auto_stop
     ? "自动停止已启用：loop 请求停止时自动切空闲；恢复方式仍由你选择。"
-    : "手动停止：loop 请求停止后，选择空闲继续。";
+    : "手动停止：VLA 与 GRM 持续运行；评分成功或失败不结束本轮，按空闲（I）停止。";
   $("bridge-record").textContent = s.recording ? "停止录制（录制中）" : "开始录制";
   $("bridge-record").setAttribute("aria-pressed", String(!!s.recording));
   const recording = status.recording || {};

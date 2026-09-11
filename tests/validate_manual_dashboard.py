@@ -217,7 +217,12 @@ def main():
                         page.wait_for_function(f"{pixel} === '52,237,181'")
                         if integrated:
                             if not args.auto_stop:
-                                expect(page.locator("#action-title")).to_have_text("等待停止", timeout=15000)
+                                expect(page.locator("#score-status")).to_have_text("GRM 判定：成功 · 持续监控", timeout=15000)
+                                expect(page.locator("#action-title")).to_have_text("执行中")
+                                last_step = page.evaluate("status.monitor.result.inference_step")
+                                page.wait_for_function("step => status.monitor.result.inference_step >= step + 2", arg=last_step)
+                                expect(page.locator("#bridge-home")).to_be_disabled()
+                                expect(page.locator("#bridge-idle")).to_be_enabled()
                                 page.locator("#bridge-idle").click()
                             expect(page.locator("#bridge-home")).to_be_enabled(timeout=15000)
                             if args.recovery == "teleop":

@@ -3,7 +3,7 @@ robot:
   type: x1pro
   driver: manual_bridge
   operator_timeout_s: 300.0
-  # false: click Idle when the loop requests stop. true: stop automatically.
+  # false: keep VLA and GRM running until Idle (I). true: stop on GRM verdicts.
   auto_stop: true
   scheduler_url: ws://192.168.10.3:8088
   # scheduler_url: ws://192.168.31.118:8088

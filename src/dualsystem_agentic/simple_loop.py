@@ -179,6 +179,8 @@ class SimpleRobotLoop:
             if data.get("execution_id") != self.identity["execution_id"] or not data.get("monitor_id"):
                 raise RuntimeError("execute returned missing or mismatched execution/monitor IDs")
             self.identity["monitor_id"] = data["monitor_id"]
+            continuous = ((data.get("result") or {}).get("continuous_monitoring") is True
+                          or (data.get("metadata") or {}).get("continuous_monitoring") is True)
             # Manual startup can spend minutes waiting for the operator. Score
             # freshness budgets begin when execute has returned and activated
             # monitoring; the HTTP call has its own startup timeout.
@@ -188,7 +190,7 @@ class SimpleRobotLoop:
                 status = str(data.get("status") or data.get("monitor_status") or "").strip().lower()
                 self.write(f"[monitor] status={status or 'missing'} progress={data.get('progress')}")
                 now = self.clock()
-                if now - started >= self.settings.max_execution_s:
+                if not continuous and now - started >= self.settings.max_execution_s:
                     raise TimeoutError("execution time limit exceeded")
                 step = int(data.get("poll_count") or 0)
                 if step > last_step:
