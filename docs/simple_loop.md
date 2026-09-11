@@ -10,6 +10,12 @@
 
 不加载 VLM、AgenticRobotLoop、DataLoader 或额外 executor。GRM Monitor 仍由 Robot Runtime 的 `remote_http` provider 接入，并自行采图。这里将用户所说的 `progress` 兼容为现有 Monitor 的 `running`；数值字段 `progress` 只显示，不用于状态分支。success 也会触发中止与恢复。
 
+使用 `manual_bridge` 和 `--input-source web` 时，ready 输入来自网页的“自主运行 / 开始（A）”：
+先在 `/manual` 保存一次模板目标或完整指令，此后每轮按 A 复用。保存可以在执行和恢复期间进行，
+仅影响下一次开始；A 固定本轮任务，再交给 Runtime 准备参考帧和启动 VLA，无需第二次确认。
+保存内容在 Runtime 内存中，网页刷新或重启 loop 不会清除，重启 Runtime 后需重新保存。
+详见 [保存和复用 instruction](manual_bridge_instructions.md)。以下终端输入方式保持原样。
+
 ## 启动
 
 先启动既有 Robot Runtime 和外部 Monitor（使用 GRM steering 时也需启动 SAM3），然后在仓库根目录：

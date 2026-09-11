@@ -7,9 +7,9 @@
 
 | 当前状态 | VLA 控制 | 成功后的状态 |
 |---|---|---|
-| ready | 提交模板目标或完整 instruction | 准备本轮 Monitor 参考帧 |
-| 准备参考帧 | 等待；可用空闲取消本轮 | 参考帧就绪后等待启动 |
-| 等待启动 | 自主运行 A | 设置本轮指令，启动 VLA，等待启动延时，再激活 GRM，进入执行 |
+| 任意阶段 | 保存模板目标或完整 instruction | 更新下次开始使用的指令；当前 loop / VLA 状态不变 |
+| ready，已有保存指令 | 自主运行 A | 固定本轮 instruction，创建 execution / Monitor，准备参考帧 |
+| 准备参考帧 | 等待；可用空闲取消本轮 | 就绪后自动设置本轮指令、启动 VLA，等待启动延时，再激活 GRM，进入执行 |
 | 启动中 / 执行中 | 空闲 I | 取消本轮、暂停 Scheduler、清理动作队列，完成停止后关闭本轮 Monitor |
 | 执行中，loop 请求停止 | 空闲 I；或启用 auto_stop 自动处理 | 停止完成后等待恢复选择 |
 | 等待恢复 | Homing H | 归位中，等待配置的归位时间后进入 ready |
@@ -23,8 +23,13 @@
 - 停止 → 遥操作调整 → 空闲结束调整 → ready → 下一轮。
 
 **调整完成由切回空闲表达**，不额外添加“已调整”确认按钮。执行中不允许直接切遥操作，
-需要先停止本轮；调整中不能直接切自主运行或提交新任务。下一轮必须重新提交任务，
-生成新的 execution / Monitor ID 和起始参考帧，不继承上一轮评分。
+需要先停止本轮；调整中不能直接切自主运行。执行或调整中可以保存下一轮指令，当前任务保持不变。
+归位或调整完成后，下一轮直接按 A 复用已保存指令，无需重复填写或保存；每轮仍生成新的
+execution / Monitor ID 和起始参考帧，不继承上一轮评分。参考帧就绪后不再需要第二次按 A。
+
+保存与开始的具体规则见 [保存和复用 instruction](manual_bridge_instructions.md)。指令保存在
+Runtime 内存中，可跨网页刷新、loop 重启复用；重启 Runtime 后需重新保存。
+旧客户端通过 `/manual/task` 提交或直接调用 execute 时，仍保留原有等待 A 的交接入口。
 
 若 Scheduler 没有 takeover / teleop 能力，遥操作按钮禁用。自主和空闲仍可使用
 普通 Scheduler 的连续运行 / 单步暂停能力。`S` 和 `Enter` 保留执行中的单步控制；
@@ -74,7 +79,8 @@ MCP 中继续使用 `DUAL_FRANKA_ENABLE_RESET: "true"`，同时开放 `reset_tas
 
 - `/manual/bridge/action` 的 `set_mode` / `homing` 通过 Runtime 生命周期处理，不直接代理模式命令。
   等待操作时携带当前 `args.request_id`；执行中主动空闲携带当前 `args.execution_id`。
-  网页自动填写，两种字段均用于拒绝过期操作。重复提交同一请求和动作不会重发命令。
+  ready 阶段按 A 时携带 `args.input_request_id` 和 `args.instruction_revision`。
+  网页自动填写这些字段，用于拒绝过期操作。重复提交同一请求和动作不会重发命令。
 - `/manual/status` 的 `vla_controls` 给出当前可用操作；`recovery_required` 为 true 时拒绝下一轮。
   `pending.phase` 包括 waiting / queued / running / adjusting / finishing；页面按这些状态显示提示。
 - 刷新或关闭网页不会替操作员结束调整。重新打开页面可继续选择空闲。

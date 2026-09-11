@@ -152,6 +152,8 @@ class SimpleRobotLoop:
             # A web task is one literal instruction for both VLA and Monitor.
             # Never alias it through an unrelated training prompt.
             options = {"prompt_mode": "text"}
+            if target.start_token:
+                options["manual_start_token"] = target.start_token
         else:
             target = target.strip() or self.last_target
             if not target:

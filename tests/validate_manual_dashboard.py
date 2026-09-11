@@ -181,6 +181,7 @@ def main():
                             expect(page.locator("#bridge-record")).to_have_text("停止录制（录制中）")
                             page.locator("#bridge-person").fill("browser-test")
                             page.locator("#bridge-set-person").click()
+                        page.wait_for_function("isReady()")
                         original_prompt = httpx.get(runtime_url + "/manual/status").json()["data"]["input"]["request_id"]
                         if args.input_mode == "instruction":
                             page.locator("#mode-instruction").click()
@@ -198,8 +199,12 @@ def main():
                         if integrated:
                             expect(page.locator("#ack")).to_be_hidden()
                             expect(page.locator("#operator-heading")).to_have_text("本轮状态")
-                        expect(page.locator("#submit-target")).to_be_disabled()
-                        assert httpx.get(runtime_url + "/manual/status").json()["data"]["execution"]["subtask"] == instruction
+                        if integrated:
+                            expect(page.locator("#saved-instruction")).to_have_text(instruction)
+                            assert not runtime._executions  # Saving alone never starts VLA or Monitor.
+                        else:
+                            expect(page.locator("#submit-target")).to_be_disabled()
+                            assert httpx.get(runtime_url + "/manual/status").json()["data"]["execution"]["subtask"] == instruction
                         start_button.click()
                         page.locator("#view-grm").click()
                         expect(page.locator("#note-cam_high")).to_contain_text("97.0%", timeout=10000)
@@ -218,7 +223,7 @@ def main():
                             if args.recovery == "teleop":
                                 page.locator("#bridge-teleop").click()
                                 expect(page.locator("#action-title")).to_have_text("调整中")
-                                expect(page.locator("#submit-target")).to_be_disabled()
+                                expect(page.locator("#submit-target")).to_be_enabled()
                                 expect(page.locator("#bridge-teleop")).to_have_attribute("aria-pressed", "true")
                                 page.evaluate("window.scrollTo(0,0)")
                                 page.screenshot(path=args.screenshot.replace(".png", "-adjusting.png"), full_page=True, animations="disabled")
@@ -234,6 +239,7 @@ def main():
                             expect(page.locator("#ack")).to_have_text("已归位")
                             page.locator("#ack").click()
                         expect(page.locator("#submit-target")).to_be_enabled()
+                        page.wait_for_function("isReady()")
                         expect(page.locator("#score-status")).to_have_text("任务成功")
                         page.locator("#view-grm").click()
                         expect(page.locator(".viewport.loaded")).to_have_count(3)

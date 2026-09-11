@@ -39,7 +39,7 @@ class WebTargetInput:
     def __call__(self, prompt):
         request_id = uuid4().hex
         path = f"/manual/input/{request_id}"
-        print(f"[ready] 在 {self.url}/manual 输入本轮任务；Ctrl+C 退出", flush=True)
+        print(f"[ready] 在 {self.url}/manual 等待网页任务；已保存指令可复用，Ctrl+C 退出", flush=True)
         try:
             self._request("POST", "/manual/input/open", {"request_id": request_id,
                 "instruction_template": self.instruction_template, "last_target": self.last_target,

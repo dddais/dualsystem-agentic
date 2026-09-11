@@ -110,7 +110,20 @@ def create_app(runtime: RobotRuntime) -> FastAPI:
         if not isinstance(runtime.robot_driver, ManualRobotDriver):
             return _fail("manual adapter is not enabled", status=404)
         return _ok({**runtime.robot_driver.status(), **runtime.manual_snapshot(), "recording": runtime.recording_status(),
-                    "input": target_input.status()})
+                    "input": target_input.status(),
+                    "instruction_editor": {"enabled": isinstance(runtime.robot_driver, ManualBridgeRobotDriver), **target_input.editor()}})
+
+    @app.post("/manual/instruction")
+    def save_instruction(body: dict[str, Any]):
+        if not isinstance(runtime.robot_driver, ManualBridgeRobotDriver):
+            return _fail("manual_bridge adapter is not enabled", status=404)
+        try:
+            return _ok(target_input.save(revision=body.get("revision"), mode=body.get("mode"),
+                template_id=body.get("template_id", "default"), target=body.get("target", ""),
+                instruction=body.get("instruction", ""), target_queries=body.get("target_queries"),
+                templates_revision=body.get("templates_revision")))
+        except ValueError as exc:
+            return _fail(str(exc), status=409)
 
     @app.get("/manual/recordings/{recording_id}/download")
     def progress_recording_download(recording_id: str):
@@ -238,7 +251,15 @@ def create_app(runtime: RobotRuntime) -> FastAPI:
         if not isinstance(body.get("name"), str) or not isinstance(body.get("args", {}), dict):
             return _fail("name must be a string and args an object", status=400)
         try:
-            return _ok(runtime.dashboard_action(body["name"], body.get("args", {})))
+            args = body.get("args", {})
+            if body["name"] == "set_mode" and args.get("mode") == "autonomous" and "input_request_id" in args:
+                with runtime._lock:
+                    check_input_ready()
+                    result = target_input.start_saved(args["input_request_id"], args.get("instruction_revision"))
+                    if not result.get("already_requested"):
+                        runtime.authorize_web_start(result["task"])
+                    return _ok({"accepted": True, "already_requested": result.get("already_requested", False)})
+            return _ok(runtime.dashboard_action(body["name"], args))
         except ValueError as exc:
             return _fail(str(exc), status=409)
         except Exception as exc:
@@ -325,6 +346,7 @@ def create_app(runtime: RobotRuntime) -> FastAPI:
                     "DELETE /manual/input/{request_id}",
                     "POST /manual/target",
                     "POST /manual/task",
+                    "POST /manual/instruction",
                     "GET  /manual/monitor/frames/{frame_set_id}/{camera}.png",
                     "POST /executions",
                     "POST /monitors/status",

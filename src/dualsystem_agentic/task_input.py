@@ -8,8 +8,11 @@ class TaskInput:
     instruction: str
     target_queries: list[str] | None = None
     target: str | None = None
+    start_token: str | None = None
 
     def __post_init__(self):
+        if self.start_token is not None and (not isinstance(self.start_token, str) or len(self.start_token) != 32):
+            raise ValueError("invalid manual start token")
         if not isinstance(self.instruction, str) or not self.instruction.strip() or len(self.instruction) > 2000:
             raise ValueError("instruction must be nonempty text (maximum 2000 characters)")
         if self.target is not None and (not isinstance(self.target, str) or not self.target.strip() or len(self.target) > 200):
@@ -23,4 +26,4 @@ class TaskInput:
 
     @classmethod
     def from_payload(cls, payload):
-        return cls(payload["instruction"], payload.get("target_queries"), payload.get("target"))
+        return cls(payload["instruction"], payload.get("target_queries"), payload.get("target"), payload.get("start_token"))

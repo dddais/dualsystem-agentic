@@ -1,9 +1,10 @@
-"""One leased ready prompt, shared by the loop and the operator page."""
+"""Saved instructions and a leased ready prompt shared by the loop and operator page."""
 
 from copy import deepcopy
 from string import Formatter
 import threading
 import time
+from uuid import uuid4
 
 
 class ManualTargetInput:
@@ -12,6 +13,10 @@ class ManualTargetInput:
         self._lock = threading.Lock()
         self._request = None
         self._expires = 0.0
+        self._saved = None
+        self._revision = uuid4().hex
+        self._templates = {"default": "pick the {target} and put it into the box"}
+        self._templates_revision = uuid4().hex
 
     def _current(self):
         if self._clock() >= self._expires:
@@ -36,6 +41,9 @@ class ManualTargetInput:
                                  "last_target": last_target, "target": None, "task": None,
                                  "instruction_templates": templates,
                                  "input_modes": ["template", "instruction"] if allow_full_instruction else ["template"]}
+            if self._templates != templates:
+                self._templates = templates
+                self._templates_revision = uuid4().hex
             self._expires = self._clock() + self._lease_s
             return deepcopy(self._request)
 
@@ -72,30 +80,8 @@ class ManualTargetInput:
                 raise ValueError("loop is not ready or this prompt has expired")
             if "instruction" not in current["input_modes"]:
                 raise ValueError("restart an updated loop to enable instruction input")
-            if mode == "template":
-                if not isinstance(template_id, str) or template_id not in current["instruction_templates"]:
-                    raise ValueError("unknown instruction template")
-                if not isinstance(target, str) or len(target) > 200:
-                    raise ValueError("target must be text (maximum 200 characters)")
-                target = target.strip() or current["last_target"]
-                if not target:
-                    raise ValueError("enter a target object name")
-                instruction = current["instruction_templates"][template_id].format(target=target)
-                target_queries = [target]
-            elif mode == "instruction":
-                target, template_id = None, None
-                if target_queries is not None:
-                    if not isinstance(target_queries, list) or not 1 <= len(target_queries) <= 8 or any(
-                        not isinstance(q, str) or not q.strip() or len(q) > 200 for q in target_queries
-                    ):
-                        raise ValueError("target_queries must contain 1..8 nonempty names (maximum 200 characters each)")
-                    target_queries = list(dict.fromkeys(q.strip() for q in target_queries))
-            else:
-                raise ValueError("mode must be template or instruction")
-            if not isinstance(instruction, str) or not instruction.strip() or len(instruction) > 2000:
-                raise ValueError("instruction must be nonempty text (maximum 2000 characters)")
-            task = {"mode": mode, "template_id": template_id, "target": target,
-                    "instruction": instruction.strip(), "target_queries": target_queries}
+            task = _task(mode, template_id, target, instruction, target_queries,
+                         current["instruction_templates"], current["last_target"])
             if current["task"] is not None:
                 if current["task"] != task:
                     raise ValueError("a task has already been submitted for this round")
@@ -103,6 +89,47 @@ class ManualTargetInput:
                 raise ValueError("a target has already been submitted for this round")
             current["task"] = task
             return {"accepted": True, "request_id": request_id, "task": deepcopy(task)}
+
+    def editor(self):
+        with self._lock:
+            return {"task": deepcopy(self._saved), "revision": self._revision,
+                    "instruction_templates": deepcopy(self._templates),
+                    "templates_revision": self._templates_revision}
+
+    def save(self, *, revision, mode, template_id="default", target="", instruction="",
+             target_queries=None, templates_revision=None):
+        with self._lock:
+            if mode == "template" and templates_revision != self._templates_revision:
+                raise ValueError("templates changed; review the current template and save again")
+            task = _task(mode, template_id, target, instruction, target_queries, self._templates)
+            if task != self._saved:
+                if revision != self._revision:
+                    raise ValueError("saved instruction changed in another page; reload before overwriting")
+                self._saved = task
+                self._revision = uuid4().hex
+            return {"task": deepcopy(self._saved), "revision": self._revision,
+                    "instruction_templates": deepcopy(self._templates),
+                    "templates_revision": self._templates_revision}
+
+    def start_saved(self, request_id, revision):
+        """Snapshot one saved instruction for an explicit VLA Start click."""
+        with self._lock:
+            current = self._current()
+            if not current or current["request_id"] != request_id:
+                raise ValueError("loop is not ready or this prompt has expired")
+            if current["task"] is not None:
+                if current["task"].get("instruction_revision") == revision:
+                    return {"accepted": True, "already_requested": True, "task": deepcopy(current["task"])}
+                raise ValueError("a task has already been started for this round")
+            if current["target"] is not None:
+                raise ValueError("a target has already been submitted for this round")
+            if self._saved is None or revision != self._revision:
+                raise ValueError("saved instruction changed; refresh before starting")
+            if "instruction" not in current["input_modes"]:
+                raise ValueError("restart an updated loop to enable saved instructions")
+            current["task"] = {**deepcopy(self._saved), "start_token": uuid4().hex,
+                               "instruction_revision": self._revision}
+            return {"accepted": True, "task": deepcopy(current["task"])}
 
     def close(self, request_id):
         with self._lock:
@@ -132,3 +159,31 @@ def _templates(default, extra):
         ):
             raise ValueError("instruction_template must contain {target} and no other placeholders")
     return templates
+
+
+def _task(mode, template_id, target, instruction, target_queries, templates, last_target=""):
+    if mode == "template":
+        if not isinstance(template_id, str) or template_id not in templates:
+            raise ValueError("unknown instruction template")
+        if not isinstance(target, str) or len(target) > 200:
+            raise ValueError("target must be text (maximum 200 characters)")
+        target = target.strip() or last_target
+        if not target:
+            raise ValueError("enter a target object name")
+        instruction = templates[template_id].format(target=target)
+        target_queries = [target]
+    elif mode == "instruction":
+        target, template_id = None, None
+        if target_queries is not None:
+            if not isinstance(target_queries, list) or not 1 <= len(target_queries) <= 8 or any(
+                not isinstance(q, str) or not q.strip() or len(q) > 200 for q in target_queries
+            ):
+                raise ValueError("target_queries must contain 1..8 nonempty names (maximum 200 characters each)")
+            target_queries = list(dict.fromkeys(q.strip() for q in target_queries))
+    else:
+        raise ValueError("mode must be template or instruction")
+    if not isinstance(instruction, str) or not instruction.strip() or len(instruction) > 2000:
+        raise ValueError("instruction must be nonempty text (maximum 2000 characters)")
+    task = {"mode": mode, "template_id": template_id, "target": target,
+            "instruction": instruction.strip(), "target_queries": target_queries}
+    return task

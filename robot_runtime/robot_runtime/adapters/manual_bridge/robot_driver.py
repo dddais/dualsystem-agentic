@@ -50,6 +50,7 @@ class ManualBridgeRobotDriver(ManualRobotDriver):
         self._operator_stop_ids = set()
         self._requested_controls = set()
         self._home_requested = False
+        self._start_requested = set()
 
     def execute(self, request, execution):
         self._execute_args = (request, execution)
@@ -57,6 +58,10 @@ class ManualBridgeRobotDriver(ManualRobotDriver):
 
     def acknowledge(self, request_id):
         raise ValueError("manual_bridge requires /manual/action; acknowledgement cannot complete a robot command")
+
+    def request_start(self, execution_id):
+        with self._lock:
+            self._start_requested.add(execution_id)
 
     def request_stop(self, execution_id):
         with self._lock:
@@ -114,7 +119,11 @@ class ManualBridgeRobotDriver(ManualRobotDriver):
             if owner:
                 pending = _ControlRequest(action, execution_id, instruction, allow_adjustment=allow_adjustment)
                 self._pending = pending
-                if action == "stop" and (self.auto_stop or execution_id in self._operator_stop_ids):
+                if action == "execute" and execution_id in self._start_requested:
+                    self._start_requested.remove(execution_id)
+                    pending.choice, pending.phase = "autonomous", "queued"
+                    pending.clicked.set()
+                elif action == "stop" and (self.auto_stop or execution_id in self._operator_stop_ids):
                     pending.trigger = "operator" if execution_id in self._operator_stop_ids else "automatic"
                     pending.choice, pending.phase = "idle", "queued"
                     pending.clicked.set()
@@ -182,6 +191,10 @@ class ManualBridgeRobotDriver(ManualRobotDriver):
     def cancel_pending(self, execution_id=None):
         with self._lock:
             self._home_requested = False
+            if execution_id is not None:
+                self._start_requested.discard(execution_id)
+            else:
+                self._start_requested.clear()
             if execution_id is not None:
                 self._cancelled_ids.add(execution_id)
             pending = self._pending

@@ -117,6 +117,7 @@ class RobotRuntime:
         self._dashboard_stops = set()
         self._dashboard_threads = []
         self._emergency_generation = 0
+        self._web_start = None
         if recording is not None and recording.get("enabled", True):
             if not hasattr(robot_driver, "scheduler_status"):
                 raise ValueError("progress recording requires the manual_bridge driver")
@@ -136,6 +137,11 @@ class RobotRuntime:
                 for m in self._monitors.values()
                 if m.updated_at >= since or self._executions[m.execution_id].updated_at >= since
                 or m.execution_id == self._active_execution_id])
+
+    def authorize_web_start(self, task):
+        # Called under the Runtime lock after checking the ready input lease.
+        self._web_start = {"token": task["start_token"], "instruction": task["instruction"],
+                           "target_queries": task.get("target_queries"), "expires": time.monotonic() + 15.0}
 
     def create_execution(self, payload: JsonDict) -> ExecutionState:
         request = ExecutionRequest.from_payload(payload)
@@ -165,6 +171,15 @@ class RobotRuntime:
                 raise ValueError("Wait for reset before starting another execution")
             if self._recovery_required:
                 raise ValueError("Complete homing or teleoperation adjustment before the next execution")
+            start_token = request.options.get("manual_start_token")
+            if start_token is not None or self._web_start is not None:
+                intent = self._web_start
+                if not intent or start_token != intent["token"] or time.monotonic() >= intent["expires"]:
+                    raise ValueError("manual Start expired or cancelled; click Start for the current round")
+                if request.subtask != intent["instruction"] or request.target_queries != intent["target_queries"] or request.options.get("prompt_mode") != "text":
+                    raise ValueError("execution does not match the instruction approved by Start")
+                self._web_start = None
+                self.robot_driver.request_start(execution.execution_id)
             self._executions[execution.execution_id] = execution
             self._requests[execution.execution_id] = request
             cancelled = self._cancelled.setdefault(execution.execution_id, threading.Event())
@@ -432,6 +447,7 @@ class RobotRuntime:
         with self._lock:
             self._estop_latched = True
             self._emergency_generation += 1
+            self._web_start = None
             self._recovery_required = hasattr(self.robot_driver, "recover")
             for cancelled in self._cancelled.values():
                 cancelled.set()

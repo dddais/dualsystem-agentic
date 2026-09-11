@@ -21,9 +21,10 @@ function loopState() {
   if (status?.estop_latched) return ["软件停止已锁存", "完成 Homing 归位后才能开始下一轮。"];
   if (status?.active_execution_id) return status.execution?.driver_result?.executed
     ? ["执行中", "正在运行本轮指令并评分。选择空闲可以提前结束本轮。"]
-    : ["准备参考帧", "等待 Monitor 就绪后才允许自主运行。"];
+    : ["准备参考帧", "已请求开始；Monitor 就绪后将启动本轮 VLA。"];
   if (status?.recovery_required) return ["已停止", "等待 loop 进入恢复阶段，然后选择归位或遥操作调整。"];
-  return ["等待任务", "在目标任务中提交下一轮 instruction。"];
+  if (status?.input?.task) return ["准备启动", "已请求开始，等待 loop 准备本轮 Monitor。"];
+  return ["等待任务", "保存指令后按自主运行（A）开始；后续循环可直接复用。"];
 }
 
 let bridgeStatus = null, bridgeConnected = false, bridgeSending = false, sendingEstop = false, operationId = null;
@@ -31,6 +32,20 @@ let status = null, connected = false, view = "live", sendingTarget = false, send
 let inputId = null, imageEpoch = 0, imageKey = "", lastLive = 0, displayedMonitor = null;
 let historyId = null, history = [];
 let inputMode = "template";
+let draftDirty = false, draftRevision = null, draftTemplates = null, draftTemplatesRevision = null;
+const persistentInstruction = () => !!status?.instruction_editor?.enabled;
+function loadInstructionDraft() {
+  const editor = status.instruction_editor, task = editor.task;
+  if (draftDirty || sendingTarget || (editor.revision === draftRevision && editor.templates_revision === draftTemplatesRevision)) return;
+  draftRevision = editor.revision;
+  draftTemplates = editor.instruction_templates;
+  draftTemplatesRevision = editor.templates_revision;
+  inputMode = task?.mode || "template";
+  $("target").value = task?.target || "";
+  $("full-instruction").value = task?.mode === "instruction" ? task.instruction : "";
+  $("target-queries").value = (task?.target_queries || []).join("\n");
+  selectOptions("instruction-template", Object.entries(draftTemplates).map(([name]) => [name, name === "default" ? "默认模板" : name]), task?.template_id || "default");
+}
 const percent = value => typeof value === "number" && Number.isFinite(value) ? `${(value * 100).toFixed(1)}%` : "—";
 
 async function request(path, payload, method) {
@@ -48,9 +63,10 @@ function isReady() {
 }
 
 function taskPreview() {
-  const prompt = status?.input;
+  const persistent = persistentInstruction();
+  const prompt = persistent ? {instruction_templates: draftTemplates, input_modes: ["template", "instruction"], last_target: ""} : status?.input;
   if (!prompt) return;
-  if (prompt.task) { $("task-preview").textContent = prompt.task.instruction; return; }
+  if (!persistent && prompt.task) { $("task-preview").textContent = prompt.task.instruction; return; }
   if (inputMode === "instruction" && prompt.input_modes?.includes("instruction")) {
     $("task-preview").textContent = $("full-instruction").value.trim() || "输入完整指令后，将原样用于本轮任务。";
     return;
@@ -63,16 +79,19 @@ function taskPreview() {
 
 function renderControls() {
   const integrated = status?.control_mode === "bridge";
+  const persistent = persistentInstruction();
+  if (persistent) loadInstructionDraft();
+  const editable = persistent ? connected : isReady();
   const pending = connected ? status?.pending : null;
   const label = pending && (integrated ? bridgeActions : actions)[pending.action];
   const busy = integrated && pending && pending.phase !== "waiting";
   const ready = isReady();
-  const advanced = status?.input?.input_modes?.includes("instruction");
+  const advanced = persistent || status?.input?.input_modes?.includes("instruction");
   const submitted = status?.input && (status.input.task || status.input.target !== null);
-  $("target").disabled = !ready || sendingTarget;
-  $("submit-target").disabled = !ready || sendingTarget;
-  $("submit-target").textContent = submitted ? "已提交，等待 loop" : advanced ? "提交任务" : "提交目标";
-  if (status?.input && inputId !== status.input.request_id) {
+  $("target").disabled = !editable || sendingTarget;
+  $("submit-target").disabled = !editable || sendingTarget;
+  $("submit-target").textContent = persistent ? "保存指令" : submitted ? "已提交，等待 loop" : advanced ? "提交任务" : "提交目标";
+  if (!persistent && status?.input && inputId !== status.input.request_id) {
     inputId = status.input.request_id;
     $("target").value = "";
     $("full-instruction").value = "";
@@ -80,7 +99,7 @@ function renderControls() {
     $("target-error").textContent = "";
     $("target").placeholder = status.input.last_target ? `留空复用 ${status.input.last_target}` : "例如 carrot / white cube";
   }
-  if (status?.input?.task) inputMode = status.input.task.mode;
+  if (!persistent && status?.input?.task) inputMode = status.input.task.mode;
   $("input-modes").hidden = !advanced;
   $("template-choice").hidden = !advanced;
   $("template-fields").hidden = advanced && inputMode === "instruction";
@@ -88,8 +107,8 @@ function renderControls() {
   $("instruction-destination").hidden = !advanced || !integrated;
   $("mode-template").setAttribute("aria-pressed", String(inputMode === "template"));
   $("mode-instruction").setAttribute("aria-pressed", String(inputMode === "instruction"));
-  for (const id of ["mode-template", "mode-instruction", "instruction-template", "full-instruction", "target-queries"]) $(id).disabled = !ready || sendingTarget;
-  if (advanced) {
+  for (const id of ["mode-template", "mode-instruction", "instruction-template", "full-instruction", "target-queries"]) $(id).disabled = !editable || sendingTarget;
+  if (advanced && !persistent) {
     const templates = status.input.instruction_templates;
     const previous = status.input.task?.template_id || $("instruction-template").value;
     const selected = Object.hasOwn(templates, previous) ? previous : "default";
@@ -101,9 +120,22 @@ function renderControls() {
     : status?.active_execution_id || pending ? "本轮停止并完成归位或调整后，可输入下一个目标。"
     : submitted ? "任务已提交，请等待参考帧准备。"
     : "等待使用 web 输入的 loop 进入 ready。终端模式可加 --input-source web 重启。";
+  $("task-heading").textContent = persistent ? "任务指令" : "目标任务";
+  $("saved-instruction-panel").hidden = !persistent;
+  $("discard-instruction").hidden = !persistent;
+  $("discard-instruction").disabled = !draftDirty || sendingTarget;
+  $("instruction-draft-status").hidden = !persistent;
+  if (persistent) {
+    $("saved-instruction").textContent = status.instruction_editor.task?.instruction || "尚未保存指令";
+    $("instruction-draft-status").textContent = draftDirty ? "有未保存的编辑；保存后才会用于下一次开始。" : status.instruction_editor.task ? "已保存，后续循环持续复用。" : "填写并保存一条指令。";
+    $("target-hint").textContent = status.active_execution_id || status.pending || status.input?.task
+      ? "本轮指令已锁定。现在保存的修改用于下次开始，本轮 VLA 和 VLM 保持一致。"
+      : isReady() ? "保存不会启动机器人。按自主运行（A）开始；每轮结束后无需重复提交。"
+      : "指令保存在 Runtime 中；等待 loop 进入 ready 后即可开始。";
+  }
   taskPreview();
   $("action-title").textContent = label ? label[0] : status?.active_execution_id ? "等待评分或准备参考帧" : "等待任务";
-  $("instruction").textContent = pending?.instruction || status?.execution?.subtask || "—";
+  $("instruction").textContent = pending?.instruction || status?.input?.task?.instruction || status?.execution?.subtask || "—";
   $("action-help").textContent = busy ? "操作已提交，正在执行命令并等待完成…" : label ? label[1] : "需要人工操作时，这里会显示提示。";
   $("ack").hidden = integrated || !label;
   $("ack").disabled = !connected || sendingAck || busy || (integrated && pending?.action === "execute"
@@ -135,17 +167,21 @@ function renderControls() {
   renderBridge();
 }
 
-$("target").addEventListener("input", taskPreview);
-$("full-instruction").addEventListener("input", taskPreview);
-$("instruction-template").addEventListener("change", taskPreview);
-$("mode-template").onclick = () => { inputMode = "template"; renderControls(); };
-$("mode-instruction").onclick = () => { inputMode = "instruction"; renderControls(); };
+function editInstruction() { if (persistentInstruction()) draftDirty = true; renderControls(); }
+$("target").addEventListener("input", editInstruction);
+$("full-instruction").addEventListener("input", editInstruction);
+$("target-queries").addEventListener("input", editInstruction);
+$("instruction-template").addEventListener("change", editInstruction);
+$("mode-template").onclick = () => { inputMode = "template"; editInstruction(); };
+$("mode-instruction").onclick = () => { inputMode = "instruction"; editInstruction(); };
+$("discard-instruction").onclick = () => { draftDirty = false; draftRevision = null; $("target-error").textContent = ""; renderControls(); };
 $("target-form").addEventListener("submit", async event => {
   event.preventDefault();
-  if (!isReady() || sendingTarget) return;
-  const requestId = status.input.request_id;
-  const advanced = status.input.input_modes?.includes("instruction");
-  const payload = {request_id: requestId};
+  const persistent = persistentInstruction();
+  if (!(persistent ? connected : isReady()) || sendingTarget) return;
+  const requestId = status.input?.request_id;
+  const advanced = persistent || status.input.input_modes?.includes("instruction");
+  const payload = persistent ? {revision: draftRevision, templates_revision: draftTemplatesRevision} : {request_id: requestId};
   if (advanced) {
     payload.mode = inputMode;
     if (inputMode === "template") {
@@ -159,8 +195,11 @@ $("target-form").addEventListener("submit", async event => {
   } else payload.target = $("target").value;
   sendingTarget = true; renderControls();
   try {
-    const result = await request(advanced ? "/manual/task" : "/manual/target", payload);
-    if (status?.input?.request_id === requestId) {
+    const result = await request(persistent ? "/manual/instruction" : advanced ? "/manual/task" : "/manual/target", payload);
+    if (persistent) {
+      status.instruction_editor = {enabled: true, ...result};
+      draftDirty = false; draftRevision = null;
+    } else if (status?.input?.request_id === requestId) {
       if (advanced) status.input.task = result.task;
       else status.input.target = result.target;
     }
@@ -411,12 +450,14 @@ function renderBridge() {
     + (allowed.includes(digitTarget === "Phase" ? "set_phase" : "set_prompt") ? "" : "（当前不可设置）");
   selectOptions("bridge-prompt", (s.prompts || []).map((prompt, i) => [i, `${i}. ${prompt}`]), (s.prompts || []).indexOf(s.prompt));
   selectOptions("bridge-phase", Array.from({length: 10}, (_, i) => [i, `${i} ${s.phase_labels?.[i] || ""}`]), s.phase);
-  const lifecycle = connected && bridgeConnected && !bridgeSending ? status.vla_controls || [] : [];
+  const lifecycle = connected && bridgeConnected && !bridgeSending ? [...(status.vla_controls || [])] : [];
+  if (connected && bridgeConnected && !bridgeSending && isReady() && status.instruction_editor?.task
+      && status.input?.input_modes?.includes("instruction")) lifecycle.push("autonomous");
   for (const button of document.querySelectorAll("#bridge-modes [data-control]")) {
     const control = button.dataset.control;
     const supportedControl = control !== "teleop" || (supported.includes("set_mode") && (s.modes || []).includes("teleop"));
     button.disabled = !supportedControl || !lifecycle.includes(control)
-      || (control === "autonomous" && !!bridgeStatus?.selection_error);
+      || (control === "autonomous" && (draftDirty || sendingTarget || (!isReady() && !!bridgeStatus?.selection_error)));
     button.setAttribute("aria-pressed", String(control === s.mode));
   }
   $("bridge-auto-stop").textContent = status.auto_stop
@@ -457,7 +498,10 @@ $("bridge-modes").addEventListener("click", async event => {
   if (!button || button.disabled || bridgeSending) return;
   const control = button.dataset.control;
   const args = {execution_id: status.active_execution_id || status.execution?.execution_id};
-  if (status.pending) args.request_id = status.pending.request_id;
+  if (control === "autonomous" && isReady() && status.instruction_editor?.task) {
+    args.input_request_id = status.input.request_id;
+    args.instruction_revision = status.instruction_editor.revision;
+  } else if (status.pending) args.request_id = status.pending.request_id;
   if (control !== "homing") args.mode = control;
   bridgeSending = true; renderControls();
   try {
@@ -468,6 +512,7 @@ $("bridge-modes").addEventListener("click", async event => {
       status.pending.choice = status.pending.choice || control;
     }
     status.vla_controls = [];
+    if (args.input_request_id && status.input) status.input.task = {...status.instruction_editor.task};
   } catch (error) { $("bridge-error").textContent = error.message; }
   finally { bridgeSending = false; renderControls(); }
 });

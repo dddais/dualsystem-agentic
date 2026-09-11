@@ -145,7 +145,8 @@ td:nth-child(n+2), th:nth-child(n+2) { text-align: right; font-variant-numeric: 
 <body>
 <header><span id="connection-dot" class="dot" aria-hidden="true"></span><h1>机器人操作台</h1><span id="runtime-mode" class="meta">manual</span><span id="connection" class="connection" role="status">正在连接</span></header>
 <main>
-<section class="panel"><div class="panel-top"><h2>目标任务</h2><span class="badge" id="phase">等待连接</span></div>
+<section class="panel"><div class="panel-top"><h2 id="task-heading">目标任务</h2><span class="badge" id="phase">等待连接</span></div>
+<div id="saved-instruction-panel" hidden><p class="hint">已保存指令 · 后续循环持续复用</p><p id="saved-instruction" class="task-preview"></p></div>
 <form id="target-form">
 <div id="input-modes" class="segments" aria-label="任务输入方式" hidden><button id="mode-template" type="button" aria-pressed="true">模板填目标</button><button id="mode-instruction" type="button" aria-pressed="false">完整指令</button></div>
 <div id="template-fields"><div id="template-choice" class="task-field" hidden><label for="instruction-template">预设模板</label><select id="instruction-template" disabled></select></div>
@@ -153,7 +154,7 @@ td:nth-child(n+2), th:nth-child(n+2) { text-align: right; font-variant-numeric: 
 <div id="instruction-fields" hidden><div class="task-field"><label for="full-instruction">完整 instruction</label><textarea id="full-instruction" maxlength="2000" placeholder="例如 Pick up the red cup and place it beside the box." disabled></textarea></div>
 <div class="task-field"><label for="target-queries">SAM3 检测目标（可选，每行一个）</label><textarea id="target-queries" maxlength="1607" placeholder="red cup" disabled></textarea><p class="hint">复杂或中文指令建议填写英文物体名；留空时由 Monitor 按现有规则提取。</p></div></div>
 <p id="instruction-destination" class="hint" hidden>最终指令将同时发送给 VLA 和 VLM Monitor。</p>
-<p id="task-preview" class="task-preview">Loop 进入 ready 后，可在这里提交目标。</p><button id="submit-target" class="primary" type="submit" disabled>提交目标</button></form>
+<p id="task-preview" class="task-preview">Loop 进入 ready 后，可在这里提交目标。</p><button id="submit-target" class="primary" type="submit" disabled>提交目标</button><button id="discard-instruction" type="button" hidden>撤销编辑</button><p id="instruction-draft-status" class="hint" hidden></p></form>
 <p id="target-hint" class="hint">正在检查 loop 状态…</p><p id="target-error" class="error" role="alert"></p>
 </section>
 <section class="panel"><div class="panel-top"><h2 id="operator-heading">人工操作</h2><span id="operator-mode" class="muted" style="font-size:12px">原 VLA 控制界面操作</span></div>
@@ -175,7 +176,7 @@ td:nth-child(n+2), th:nth-child(n+2) { text-align: right; font-variant-numeric: 
 <div id="bridge-panel" hidden>
 <section class="panel"><div class="panel-top"><h2>VLA 控制</h2><span id="bridge-connection" class="badge">连接 Scheduler…</span></div>
 <p id="bridge-summary" class="muted"></p><p id="bridge-selection" class="hint"></p>
-<p class="hint">自主运行开始本轮；空闲停止本轮。停止后选择 Homing 归位，或遥操作调整后切空闲，进入下一轮。</p>
+<p class="hint">保存指令后，自主运行开始本轮；空闲停止本轮。归位或调整完成后，可继续用同一指令开始。</p>
 <div class="bridge-row" id="bridge-modes">
 <button id="bridge-idle" data-control="idle" data-mode="idle" data-shortcut="I" aria-keyshortcuts="i">空闲 / 停止</button>
 <button id="bridge-teleop" data-control="teleop" data-mode="teleop" data-shortcut="T" aria-keyshortcuts="t">遥操作 / 调整</button>

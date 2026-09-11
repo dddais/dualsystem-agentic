@@ -179,6 +179,7 @@ def main():
                 scheduler.offline = False
                 expect(page.locator("#bridge-record")).to_be_enabled()
 
+                page.locator("#discard-instruction").click()
                 start = pool.submit(runtime.create_execution, {"subtask":"pick cup"})
                 expect(page.locator("#bridge-autonomous")).to_be_enabled()
                 expect(page.locator("#ack")).to_be_hidden()
