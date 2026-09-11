@@ -4,7 +4,7 @@ robot:
   driver: manual_bridge
   operator_timeout_s: 300.0
   # false: click Idle when the loop requests stop. true: stop automatically.
-  auto_stop: false
+  auto_stop: true
   scheduler_url: ws://192.168.10.3:8088
   # scheduler_url: ws://192.168.31.118:8088
   robot_url: ws://127.0.0.1:9946
@@ -21,7 +21,7 @@ camera:
   provider: robot_bridge
   # robot_url defaults to robot.robot_url; this is an independent connection.
   timeout_s: 5.0
-  cache_s: 0.5
+  cache_s: 0.1
   snapshot_ttl_s: 30.0
   max_obs_lag_s: 3.0
   quality: 90
