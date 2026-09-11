@@ -242,6 +242,20 @@ class ManualBridgeRobotDriver(ManualRobotDriver):
             index = args.get("index")
             if type(index) is not int or not 0 <= index < len(state.get("prompts", [])):
                 raise ValueError("prompt index out of range")
+        if name == "toggle_recording":
+            starting = not state.get("recording")
+            person = args.get("person", state.get("person"))
+            if starting and "person" in args:
+                if not isinstance(person, str) or len(person) > 64:
+                    raise ValueError("recording person must be text (maximum 64 characters)")
+                self.bridge._action(self._control, "set_person", {"person": person}, token=cancelled)
+            # Use the original Scheduler API and naming rule. Instruction is
+            # Runtime export metadata only; never a Scheduler recording argument.
+            result = self.bridge._action(self._control, name, {}, token=cancelled)
+            if starting and result.get("recording_info"):
+                result = {**result, "recording_info": {**result["recording_info"],
+                    "instruction": args.get("instruction"), "person": person, "model_name": state.get("model_name")}}
+            return result
         return self.bridge._action(self._control, name, args, token=cancelled)
 
     def scheduler_log(self, target, lines):

@@ -16,7 +16,7 @@ Runtime 默认保存到**启动进程工作目录**下的 `runs/recordings/<录�
 
 | 文件 | 内容 |
 |---|---|
-| `manifest.json` | 完整命名指令、采集人、模型、视频录制 ID、机器人端 `episode_dir` / `archive`、起止时间、任务来源、评分/图片数量及完整性信息 |
+| `manifest.json` | 录制开始时的指令、采集人、模型、视频录制 ID、机器人端 `episode_dir` / `archive`、起止时间、任务来源、评分/图片数量及完整性信息 |
 | `progress.jsonl` | 每次 GRM 推理一行；包含时间、instruction、进度、状态、可移植的图片相对路径与 SHA-256，以及 `grm` 字段中的完整原始结果 |
 | `progress.csv` | 融合进度，steering 与 baseline 各自的 forward / incremental / backward score 和 progress，分支差异、延迟、三视角图片相对路径；未启用模式留空 |
 | `frames/task_001/step_000001/*.png` | 该次评分使用的 `cam_high.png`、`cam_left_wrist.png`、`cam_right_wrist.png`，按任务和推理步区分 |
@@ -36,21 +36,23 @@ Runtime 默认保存到**启动进程工作目录**下的 `runs/recordings/<录�
 
 ## 可读命名
 
-Manual UI 沿用 Scheduler 的 `采集人@模型@时间` 形式，加入指令与防重名短编号：
+Manual UI 直接沿用 Scheduler 的 `采集人@模型@时间` 命名：
 
 ```text
-张三@my-run-1000@把胡萝卜放进盒子@2026_09_11_15_30_00@a1b2c3d4.zip
+张三@my-run-1000@2026_09_11_15_30_00.zip
 ```
 
-更新后的 Scheduler 向机器人传递相同 episode 名称，因此机器人端 `.tar` 与 Runtime
-目录/ZIP 使用相同名称主体。原 Scheduler UI 不传 instruction 时保留原命名行为。
+Runtime 采用 Scheduler 返回的实际 episode 名称，因此机器人端 `.tar` 与 Runtime
+目录/ZIP 使用相同名称主体。不需要修改 Scheduler 的命名或录制接口；Manual Record
+通过已有 `set_person` 提交采集人，再调用原来的 `toggle_recording`。
 
-- 录制开始时固定名称。正在执行时使用本轮实际 instruction；尚未开始时使用 UI
-  已保存的 instruction。未保存的指令草稿不用于命名，没有已保存指令则写“未设置指令”。
+- 文件名不加入 instruction，也不固定追加短编号。未填写采集人时沿用机器人默认
+  `episode_YYYYMMDD_HHMMSS` 名称。仅当 Runtime 本地目录重名时追加短编号，避免覆盖已有数据。
+- Scheduler 异步启动录制期间，Runtime 先收集评分，收到实际名称后自动对齐目录名。
 - 录制期间修改已保存指令或采集人，不会重命名当前文件；跨多轮任务时，各轮完整指令
   单独保存在 JSONL / CSV 与 `manifest.sources` 中。
-- 空格、换行、路径分隔符等转换为 `-`。中文保留；长文本按 UTF-8 字节数截短并附哈希，
-  防止超过文件系统长度限制。完整 instruction 仍保存在清单和评分记录中。
+- instruction 仅作为记录元数据保留：正在执行时记录本轮实际指令；尚未开始时记录
+  UI 已保存指令。文件名中的采集人继续使用 Scheduler 原有的字符净化规则。
 
 ## 时间与完整性
 
@@ -119,7 +121,7 @@ instruction 可查 CSV 或清单。可选 `--time-basis observation` 使用输�
 | 运行服务的机器 | 更新代码与重启服务 |
 |---|---|
 | Manual Runtime | 更新 `dualsystem-agentic`，重启 Runtime，刷新 `/manual` |
-| Scheduler | 更新 `robot-bridge`，重启 Scheduler，按采集人、模型、指令命名视频并返回命名元数据 |
+| Scheduler | 保持原代码及命名；本次无需更新（沿用已有录制元数据接口） |
 | GRM Monitor | 更新 `Robo-Dopamine-delivery`，重启 Monitor，提供只读日志分页与持久化评分图片接口 |
 
 如果几个服务在同一台机器，则更新对应仓库并分别重启。当前改动不要求更新机器人控制器、

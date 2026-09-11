@@ -364,9 +364,11 @@ def test_readable_frozen_names_and_utf8_filename_limits(stack):
     t = time.time()
     info = state("one", t, t + .1)
     info["recording_info"].update(person="张三", model_name="run-1000", instruction="把胡萝卜放进盒子")
+    info["recording_info"].pop("episode_dir")
     r._observe(info)
     first = r.status()["name"]
-    assert first.startswith("张三@run-1000@把胡萝卜放进盒子@")
+    assert first.startswith("张三@run-1000@") and len(first.split("@")) == 3
+    assert "胡萝卜" not in first
     info["recording_info"]["instruction"] = "下一轮指令"
     r._observe(info)
     assert r.status()["name"] == first
@@ -383,3 +385,24 @@ def test_readable_frozen_names_and_utf8_filename_limits(stack):
         r._observe(repeat)
         export(r, key)
     assert len({s["dir"] for s in r._sessions.values()}) == 3
+
+
+@pytest.mark.parametrize("person", ["张三", ""])
+def test_async_scheduler_name_replaces_provisional_name_without_losing_scores(stack, person):
+    r, j, _, monitors = stack
+    t = time.time()
+    monitors.append(monitor("one", t))
+    j.rows["one"] = [score(1, t + .01)]
+    starting = {"recording": True, "person": person, "model_name": "run-1000",
+        "recording_info": {"id": "video", "state": "starting", "started_at": t, "clock": "scheduler_unix"}}
+    r._observe(starting)
+    r._collect(r._sessions["video"])
+    old_directory = r._sessions["video"]["dir"]
+    # Name timestamp can differ from request time; use Scheduler's actual result.
+    name = "张三@run-1000@2026_09_11_15_30_01" if person else "episode_20260911_153001"
+    confirmed = state("video", t, t + .1)
+    confirmed["recording_info"].update(episode_name=name if person else None, episode_dir="/robot/" + name)
+    r._observe(confirmed)
+    m, rows, _ = export(r, "video")
+    assert m["name"] == name and r.archive(m["recording_id"]).name == name + ".zip"
+    assert not old_directory.exists() and len(rows) == 1 and m["image_count"] == 3

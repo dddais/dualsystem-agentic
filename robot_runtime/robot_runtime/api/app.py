@@ -253,7 +253,7 @@ def create_app(runtime: RobotRuntime) -> FastAPI:
         try:
             args = dict(body.get("args", {}))
             if body["name"] == "toggle_recording":
-                # Saved UI text labels recordings made before the first Start.
+                # Preserve saved UI text in export metadata, independently of filenames.
                 args["instruction"] = (target_input.editor()["task"] or {}).get("instruction", "")
             if body["name"] == "set_mode" and args.get("mode") == "autonomous" and "input_request_id" in args:
                 with runtime._lock:

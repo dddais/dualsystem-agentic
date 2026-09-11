@@ -116,20 +116,21 @@ def main():
         backend, scheduler, robot = bridge(Scheduler(takeover=True), prompt_map={instruction: "pick carrot"})
         scheduler.state["modes"] = ["idle", "teleop", "autonomous"]
         scheduler.state.update(scheduler="SimulatedOpenPiScheduler", iteration=0,
-                               latency_step=0, move_steps=2, recording=False, person="")
+                               latency_step=0, move_steps=2, recording=False, person="", model_name="simulated-model")
         scheduler.state["actions"] += ["toggle_recording", "set_person", "step", "adjust_latency", "set_prompt_text"]
         original_call = scheduler.call
         def scheduler_call(request):
             name = request.get("name")
             if name == "toggle_recording":
+                assert request["args"] == {}  # Original Scheduler recording API.
                 scheduler.state["recording"] = not scheduler.state["recording"]
                 if scheduler.state["recording"]:
-                    from robot_runtime.recording import recording_name
-                    scheduler.state["person"] = request["args"]["person"]
-                    info = dict(id=uuid4().hex, state="recording", instruction=request["args"]["instruction"],
-                        person=scheduler.state["person"], model_name="simulated-model",
+                    from types import SimpleNamespace
+                    from robot_bridge.scheduler.base import SchedulerBase
+                    info = dict(id=uuid4().hex, state="recording",
                         started_at=time.time(), start_confirmed_at=time.time(), clock="scheduler_unix", busy=False)
-                    info["episode_name"] = recording_name(info, info["started_at"], info["id"])
+                    info["episode_name"] = SchedulerBase._episode_name(SimpleNamespace(
+                        _person=scheduler.state["person"], _model_name=lambda: "simulated-model"))
                     info["episode_dir"] = "/simulated/robot/" + info["episode_name"]
                     scheduler.state["recording_info"] = info
                 else:
@@ -310,7 +311,8 @@ def main():
                             assert [row["grm"] for row in recorded] == journal
                             assert all(row["instruction"] == instruction for row in recorded)
                             assert manifest["instruction"] == instruction and manifest["person"] == "browser-test"
-                            assert manifest["name"].startswith("browser-test@simulated-model@") and "carrot" in manifest["name"]
+                            assert manifest["name"].startswith("browser-test@simulated-model@") and "carrot" not in manifest["name"]
+                            assert len(manifest["name"].split("@")) == 3
                             assert downloading.value.suggested_filename == manifest["name"] + ".zip"
                             assert manifest["video"]["archive"] == "/simulated/robot/" + manifest["name"] + ".tar"
                             for name in ("manifest.json", "progress.jsonl", "progress.csv"):

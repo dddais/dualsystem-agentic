@@ -476,7 +476,7 @@ function renderBridge() {
     : "GRM 进度录制未启用；需启用 Runtime recording 配置。";
   $("record-name-preview").textContent = ["recording", "stopping", "finalizing"].includes(recording.state) && recording.name
     ? `本次名称：${recording.name}`
-    : `命名：采集人@模型@指令@时间@编号；指令：${status.active_execution_id ? status.execution?.subtask : status.instruction_editor?.task?.instruction || "未设置指令"}`;
+    : "命名沿用 Scheduler：采集人@模型@时间；未填采集人时使用默认 episode 名称。";
   $("progress-recording-path").textContent = recording.directory ? `Runtime 保存位置：${recording.directory}` : "";
   $("progress-recording-error").textContent = [s.recording_info?.error, recording.error, ...(recording.warnings || [])].filter(Boolean).join(" · ");
   $("progress-recording-download").hidden = !recording.download_ready;

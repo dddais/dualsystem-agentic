@@ -36,17 +36,21 @@ FIELDS += [f"baseline_{mode}_{metric}" for mode in ("forward", "incremental", "b
 FIELDS += [f"{camera}_image" for camera in CAMERAS]
 
 
+def video_name(info):
+    return info.get("episode_name") or (Path(info["episode_dir"]).name if info.get("episode_dir") else None)
+
+
 def recording_name(info, started, recording_id):
     def part(text, limit):
         value = re.sub(r"[^\w@-]", "-", str(text).strip()).strip("-") or "未填写"
         raw = value.encode("utf-8")
         return value if len(raw) <= limit else raw[:limit-9].decode("utf-8", errors="ignore") + "-" + hashlib.sha256(raw).hexdigest()[:8]
-    if info.get("episode_name"):
-        return part(info["episode_name"], 230)
-    return "@".join((part(info.get("person") or "未填写采集人", 32),
-                     part(info.get("model_name") or "unknown-model", 48),
-                     part(info.get("instruction") or "未设置指令", 100),
-                     datetime.fromtimestamp(started).strftime("%Y_%m_%d_%H_%M_%S"), recording_id[-8:]))
+    if video_name(info):
+        return part(video_name(info), 230)
+    if not info.get("person"):
+        return "episode_" + datetime.fromtimestamp(started).strftime("%Y%m%d_%H%M%S")
+    return "@".join((part(info["person"], 100), part(info.get("model_name") or "unknown-model", 100),
+                     datetime.fromtimestamp(started).strftime("%Y_%m_%d_%H_%M_%S")))
 
 
 def number(value):
@@ -137,7 +141,8 @@ class ProgressRecorder:
             elif started < self._started_at:
                 manifest["warnings"].append("Runtime attached after video started; tasks from an earlier Runtime process cannot be recovered automatically.")
             session = {"manifest": manifest, "dir": directory, "cursors": {}, "seen": set(),
-                       "closed": False, "drain_started": None, "images_pending": {}, "images_saved": {}}
+                       "closed": False, "name_from_video": bool(video_name(info)),
+                       "drain_started": None, "images_pending": {}, "images_saved": {}}
             with (directory / "progress.csv").open("w", encoding="utf-8", newline="") as f:
                 csv.DictWriter(f, fieldnames=FIELDS).writeheader()
             (directory / "progress.jsonl").touch()
@@ -145,7 +150,23 @@ class ProgressRecorder:
         manifest = session["manifest"]
         if session["closed"]:
             return
+        if not session["name_from_video"] and video_name(info):
+            # Scheduler confirms its name asynchronously. Adopt that exact
+            # episode name after collecting early scores under a provisional name.
+            name = recording_name(info, manifest["started_at"], manifest["recording_id"])
+            directory = self.root / name
+            if directory != session["dir"]:
+                if directory.exists():
+                    name += "@" + manifest["recording_id"][-8:]
+                    directory = self.root / name
+                session["dir"].rename(directory)
+                session["dir"] = directory
+            manifest["name"] = name
+            session["name_from_video"] = True
         manifest["video"].update(info)
+        for field in ("instruction", "person", "model_name"):
+            if manifest.get(field) is None and info.get(field) is not None:
+                manifest[field] = info[field]
         manifest["time_alignment"]["video_start_bounds"] = [manifest["video"].get("started_at"),
                                                             manifest["video"].get("start_confirmed_at")]
         if info.get("state") in {"stopping", "stopped", "failed"}:

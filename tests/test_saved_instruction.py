@@ -62,9 +62,16 @@ def execute_payload(task, execution_id="run"):
             "options": {"prompt_mode": "text", "manual_start_token": task["start_token"]}}
 
 
-def test_record_uses_saved_instruction_before_start_and_active_instruction_during_execution():
+def test_record_preserves_instruction_metadata_but_uses_original_scheduler_api():
     runtime, driver, scheduler, _ = setup()
-    scheduler.state["actions"].append("toggle_recording")
+    scheduler.state["actions"] += ["toggle_recording", "set_person"]
+    original = scheduler.call
+    def call(request):
+        response = original(request)
+        if request.get("name") == "toggle_recording":
+            response["recording_info"] = {"id": "video", "state": "starting"}
+        return response
+    scheduler.call = call
     with TestClient(create_app(runtime)) as client:
         ready(client)
         save(client, "抓取本轮 cup", target_queries=["cup"])
@@ -72,14 +79,17 @@ def test_record_uses_saved_instruction_before_start_and_active_instruction_durin
             response = client.post("/manual/bridge/action", json={"name": "toggle_recording",
                 "args": {"person": "张三", "instruction": "untrusted client override"}})
             assert response.status_code == 200, response.text
-            return [c for c in scheduler.calls if c.get("name") == "toggle_recording"][-1]["args"]
-        assert record() == {"person": "张三", "instruction": "抓取本轮 cup"}
+            actions = [c for c in scheduler.calls if c.get("name") in {"toggle_recording", "set_person"}]
+            assert actions[-2]["name"] == "set_person" and actions[-2]["args"] == {"person": "张三"}
+            assert actions[-1]["name"] == "toggle_recording" and actions[-1]["args"] == {}
+            return response.json()["data"]["recording_info"]["instruction"]
+        assert record() == "抓取本轮 cup"
         start(client)
         task = client.get("/manual/input/round").json()["data"]["task"]
         client.delete("/manual/input/round")
         runtime.create_execution(execute_payload(task))
         save(client, "下一轮抓取 carrot", target_queries=["carrot"])
-        assert record() == {"person": "张三", "instruction": "抓取本轮 cup"}
+        assert record() == "抓取本轮 cup"
         assert scheduler.state["prompt"] == "抓取本轮 cup"
 
 
