@@ -6,6 +6,7 @@ Requires playwright + its Chromium browser. No hardware, model weights or GPU.
 """
 
 import argparse
+import hashlib
 import json
 import shutil
 import zipfile
@@ -123,12 +124,17 @@ def main():
             if name == "toggle_recording":
                 scheduler.state["recording"] = not scheduler.state["recording"]
                 if scheduler.state["recording"]:
-                    scheduler.state["recording_info"] = dict(id=uuid4().hex, state="recording",
-                        started_at=time.time(), start_confirmed_at=time.time(), clock="scheduler_unix",
-                        episode_dir="/simulated/robot/episode", busy=False)
+                    from robot_runtime.recording import recording_name
+                    scheduler.state["person"] = request["args"]["person"]
+                    info = dict(id=uuid4().hex, state="recording", instruction=request["args"]["instruction"],
+                        person=scheduler.state["person"], model_name="simulated-model",
+                        started_at=time.time(), start_confirmed_at=time.time(), clock="scheduler_unix", busy=False)
+                    info["episode_name"] = recording_name(info, info["started_at"], info["id"])
+                    info["episode_dir"] = "/simulated/robot/" + info["episode_name"]
+                    scheduler.state["recording_info"] = info
                 else:
                     scheduler.state["recording_info"].update(state="stopped", stopped_at=time.time(),
-                        stop_confirmed_at=time.time(), archive="/simulated/robot/episode.tar")
+                        stop_confirmed_at=time.time(), archive=scheduler.state["recording_info"]["episode_dir"] + ".tar")
                     scheduler.state.setdefault("recording_history", []).append(dict(scheduler.state["recording_info"]))
             elif name == "set_person":
                 scheduler.state["person"] = request["args"]["person"]
@@ -177,10 +183,6 @@ def main():
                         if integrated:
                             expect(page.locator("#bridge-connection")).to_have_text("Scheduler 已连接")
                             expect(page.locator("#bridge-single-step")).to_be_disabled()
-                            page.locator("#bridge-record").click()
-                            expect(page.locator("#bridge-record")).to_have_text("停止录制（录制中）")
-                            page.locator("#bridge-person").fill("browser-test")
-                            page.locator("#bridge-set-person").click()
                         page.wait_for_function("isReady()")
                         original_prompt = httpx.get(runtime_url + "/manual/status").json()["data"]["input"]["request_id"]
                         if args.input_mode == "instruction":
@@ -202,6 +204,10 @@ def main():
                         if integrated:
                             expect(page.locator("#saved-instruction")).to_have_text(instruction)
                             assert not runtime._executions  # Saving alone never starts VLA or Monitor.
+                            page.locator("#bridge-person").fill("browser-test")
+                            page.locator("#bridge-record").click()  # No separate Apply needed for the collector.
+                            expect(page.locator("#bridge-record")).to_have_text("停止录制（录制中）")
+                            expect(page.locator("#record-name-preview")).to_contain_text("browser-test@simulated-model@")
                         else:
                             expect(page.locator("#submit-target")).to_be_disabled()
                             assert httpx.get(runtime_url + "/manual/status").json()["data"]["execution"]["subtask"] == instruction
@@ -291,12 +297,22 @@ def main():
                             with zipfile.ZipFile(archive_path) as archive:
                                 manifest = json.loads(archive.read("manifest.json"))
                                 recorded = [json.loads(line) for line in archive.read("progress.jsonl").splitlines()]
+                                assert manifest["image_count"] == 3 * len(recorded) and manifest["missing_image_count"] == 0
+                                for row in recorded:
+                                    assert len(row["images"]) == 3
+                                    for camera, relative in row["images"].items():
+                                        data = archive.read(relative)
+                                        assert data == Path(row["grm"]["frames"][camera]).read_bytes()
+                                        assert hashlib.sha256(data).hexdigest() == row["image_sha256"][camera]
                             journal = [json.loads(line) for line in (Path(result["session_dir"]) / "online_pred.jsonl").read_text().splitlines()]
                             assert manifest["state"] == "complete" and not manifest["warnings"], manifest
                             assert manifest["record_count"] == len(recorded) == len(journal) > 1
                             assert [row["grm"] for row in recorded] == journal
                             assert all(row["instruction"] == instruction for row in recorded)
-                            assert manifest["video"]["archive"] == "/simulated/robot/episode.tar"
+                            assert manifest["instruction"] == instruction and manifest["person"] == "browser-test"
+                            assert manifest["name"].startswith("browser-test@simulated-model@") and "carrot" in manifest["name"]
+                            assert downloading.value.suggested_filename == manifest["name"] + ".zip"
+                            assert manifest["video"]["archive"] == "/simulated/robot/" + manifest["name"] + ".tar"
                             for name in ("manifest.json", "progress.jsonl", "progress.csv"):
                                 target = Path(args.screenshot.replace(".png", "-recording"))
                                 target.mkdir(parents=True, exist_ok=True)
@@ -304,7 +320,7 @@ def main():
                             page.set_viewport_size({"width":1440, "height":1000})
                             page.evaluate("window.scrollTo(0,0)")
                             page.screenshot(path=args.screenshot, full_page=True, animations="disabled")
-                            print(f"PASS: Record → {len(recorded)} GRM journal rows → reload → Stop → ZIP {archive_path}")
+                            print(f"PASS: Record → {len(recorded)} GRM journal rows + {manifest['image_count']} verified images → reload → Stop → ZIP {archive_path}")
                         assert not errors, errors
                         if integrated:
                             assert scheduler.state["prompt"] == instruction

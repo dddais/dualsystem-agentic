@@ -62,6 +62,27 @@ def execute_payload(task, execution_id="run"):
             "options": {"prompt_mode": "text", "manual_start_token": task["start_token"]}}
 
 
+def test_record_uses_saved_instruction_before_start_and_active_instruction_during_execution():
+    runtime, driver, scheduler, _ = setup()
+    scheduler.state["actions"].append("toggle_recording")
+    with TestClient(create_app(runtime)) as client:
+        ready(client)
+        save(client, "抓取本轮 cup", target_queries=["cup"])
+        def record():
+            response = client.post("/manual/bridge/action", json={"name": "toggle_recording",
+                "args": {"person": "张三", "instruction": "untrusted client override"}})
+            assert response.status_code == 200, response.text
+            return [c for c in scheduler.calls if c.get("name") == "toggle_recording"][-1]["args"]
+        assert record() == {"person": "张三", "instruction": "抓取本轮 cup"}
+        start(client)
+        task = client.get("/manual/input/round").json()["data"]["task"]
+        client.delete("/manual/input/round")
+        runtime.create_execution(execute_payload(task))
+        save(client, "下一轮抓取 carrot", target_queries=["carrot"])
+        assert record() == {"person": "张三", "instruction": "抓取本轮 cup"}
+        assert scheduler.state["prompt"] == "抓取本轮 cup"
+
+
 def test_saved_template_survives_leases_and_requests_are_immutable():
     now = [0.0]
     channel = ManualTargetInput(clock=lambda: now[0])

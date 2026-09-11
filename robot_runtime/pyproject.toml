@@ -17,7 +17,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-bridge = ["websockets>=12", "numpy", "opencv-python", "msgpack"]
+bridge = ["websockets>=12", "numpy", "opencv-python", "msgpack", "pillow"]
 
 [project.scripts]
 robot-runtime = "robot_runtime.api.app:main"

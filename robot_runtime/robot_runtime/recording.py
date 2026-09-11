@@ -6,6 +6,11 @@ while doing network/file I/O. JSONL is authoritative; CSV is for plotting.
 """
 
 from copy import deepcopy
+from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime
+import hashlib
+import io
+import re
 import csv
 import json
 import logging
@@ -26,6 +31,22 @@ FIELDS = ["recording_id", "execution_id", "monitor_id", "instruction", "inferenc
           "progress", "status", "forward_score", "forward_progress", "incremental_score",
           "incremental_progress", "backward_score", "backward_progress", "baseline_progress",
           "branch_difference", "latency_s"]
+CAMERAS = ("cam_high", "cam_left_wrist", "cam_right_wrist")
+FIELDS += [f"baseline_{mode}_{metric}" for mode in ("forward", "incremental", "backward") for metric in ("score", "progress")]
+FIELDS += [f"{camera}_image" for camera in CAMERAS]
+
+
+def recording_name(info, started, recording_id):
+    def part(text, limit):
+        value = re.sub(r"[^\w@-]", "-", str(text).strip()).strip("-") or "未填写"
+        raw = value.encode("utf-8")
+        return value if len(raw) <= limit else raw[:limit-9].decode("utf-8", errors="ignore") + "-" + hashlib.sha256(raw).hexdigest()[:8]
+    if info.get("episode_name"):
+        return part(info["episode_name"], 230)
+    return "@".join((part(info.get("person") or "未填写采集人", 32),
+                     part(info.get("model_name") or "unknown-model", 48),
+                     part(info.get("instruction") or "未设置指令", 100),
+                     datetime.fromtimestamp(started).strftime("%Y_%m_%d_%H_%M_%S"), recording_id[-8:]))
 
 
 def number(value):
@@ -51,6 +72,7 @@ class ProgressRecorder:
         self._lock = threading.RLock()
         self._thread = None
         self._started_at = time.time()
+        self._image_pool = ThreadPoolExecutor(max_workers=3, thread_name_prefix="record-images")
 
     def start(self):
         with self._lock:
@@ -73,6 +95,9 @@ class ProgressRecorder:
 
     def _observe_one(self, state):
         info = deepcopy(state.get("recording_info") or {})
+        for field in ("person", "model_name"):
+            if field not in info and state.get(field) is not None:
+                info[field] = state[field]
         key = info.get("id")
         if not key:
             if state.get("recording"):
@@ -90,10 +115,16 @@ class ProgressRecorder:
             if info.get("state") in {"stopped", "failed"} and (number(info.get("started_at")) or 0) < self._started_at:
                 return  # Do not export old videos from before this Runtime run.
             recording_id = "rec-" + uuid4().hex
-            directory = self.root / recording_id
-            directory.mkdir(parents=True, exist_ok=False)
             started = number(info.get("started_at")) or now
-            manifest = {"schema_version": 1, "recording_id": recording_id, "state": "recording",
+            name = recording_name(info, started, recording_id)
+            directory = self.root / name
+            if directory.exists():
+                name += "@" + recording_id[-8:]
+                directory = self.root / name
+            directory.mkdir(parents=True, exist_ok=False)
+            manifest = {"schema_version": 2, "recording_id": recording_id, "name": name, "state": "recording",
+                "instruction": info.get("instruction"), "person": info.get("person"), "model_name": info.get("model_name"),
+                "image_count": 0, "missing_image_count": 0,
                 "started_at": started, "stopped_at": None, "runtime_observed_at": now,
                 "video": info, "scheduler_url": self.runtime.robot_driver.bridge.scheduler_url,
                 "monitor_url": getattr(self.runtime.monitor_provider, "url", None),
@@ -106,7 +137,7 @@ class ProgressRecorder:
             elif started < self._started_at:
                 manifest["warnings"].append("Runtime attached after video started; tasks from an earlier Runtime process cannot be recovered automatically.")
             session = {"manifest": manifest, "dir": directory, "cursors": {}, "seen": set(),
-                       "closed": False, "drain_started": None}
+                       "closed": False, "drain_started": None, "images_pending": {}, "images_saved": {}}
             with (directory / "progress.csv").open("w", encoding="utf-8", newline="") as f:
                 csv.DictWriter(f, fieldnames=FIELDS).writeheader()
             (directory / "progress.jsonl").touch()
@@ -149,6 +180,15 @@ class ProgressRecorder:
         identity = (monitor["monitor_id"], step)
         if identity in session["seen"]:
             return
+        source = manifest["sources"][monitor["monitor_id"]]
+        source.setdefault("image_directory", f"frames/task_{list(manifest['sources']).index(monitor['monitor_id']) + 1:03d}")
+        images = {camera: f"{source['image_directory']}/step_{step:06d}/{camera}.png" for camera in CAMERAS}
+        for camera, relative in images.items():
+            session["images_pending"].setdefault(relative, {
+                "monitor_id": monitor["monitor_id"], "execution_id": monitor["execution_id"], "inference_step": step,
+                "camera": camera, "frame_set_id": (record.get("preview") or {}).get("frame_set_id"),
+                "expected_sha256": (record.get("observation") or {}).get("cameras", {}).get(camera, {}).get("image_sha256"),
+                "timestamp": timestamp, "next_attempt": 0, "error": None})
         observation_at = number((record.get("observation") or {}).get("snapshot_requested_at"))
         row = {"recording_id": manifest["recording_id"], "execution_id": monitor["execution_id"],
                "monitor_id": monitor["monitor_id"], "instruction": monitor["subtask"], "inference_step": step,
@@ -161,7 +201,10 @@ class ProgressRecorder:
         for mode in ("forward", "incremental", "backward"):
             for metric in ("score", "progress"):
                 row[f"{mode}_{metric}"] = record.get("modes", {}).get(mode, {}).get(metric)
-        entry = {**row, "received_at": time.time(), "capture_mode": capture_mode, "grm": record}
+                row[f"baseline_{mode}_{metric}"] = record.get("branches", {}).get("baseline", {}).get("modes", {}).get(mode, {}).get(metric)
+        row.update({f"{camera}_image": relative for camera, relative in images.items()})
+        entry = {**row, "received_at": time.time(), "capture_mode": capture_mode,
+                 "planned_images": images, "images": images, "grm": record}
         with (session["dir"] / "progress.jsonl").open("a", encoding="utf-8") as f:
             f.write(json.dumps(entry, ensure_ascii=False) + "\n")
         # CSV is derived; an export can always rebuild it from authoritative JSONL.
@@ -169,6 +212,52 @@ class ProgressRecorder:
         manifest["record_count"] += 1
         with (session["dir"] / "progress.csv").open("a", encoding="utf-8", newline="") as f:
             csv.DictWriter(f, fieldnames=FIELDS).writerow(row)
+
+    @staticmethod
+    def _in_window(session, stamp):
+        m = session["manifest"]
+        return stamp >= m["started_at"] and (m["stopped_at"] is None or stamp <= m["stopped_at"])
+
+    def _fetch_image(self, session, relative, job):
+        from PIL import Image
+        fetch = getattr(self.runtime.monitor_provider, "progress_image", None)
+        if fetch is None:
+            raise RuntimeError("Monitor has no scoring-image export API; update Monitor and Runtime")
+        data = fetch(job["monitor_id"], job["execution_id"], job["inference_step"], job["camera"], job["frame_set_id"])
+        digest = hashlib.sha256(data).hexdigest()
+        if job["expected_sha256"] and digest != job["expected_sha256"]:
+            raise ValueError("scoring image checksum differs from the recorded input")
+        with Image.open(io.BytesIO(data)) as image:
+            if image.format != "PNG":
+                raise ValueError("scoring image must be PNG")
+            image.verify()
+        path = session["dir"] / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = path.with_suffix(".tmp")
+        temporary.write_bytes(data)
+        temporary.replace(path)
+        return {"sha256": digest, "bytes": len(data)}
+
+    def _collect_images(self, session):
+        jobs = [(relative, job) for relative, job in session["images_pending"].items()
+                if self._in_window(session, job["timestamp"]) and job["next_attempt"] <= time.monotonic()][:3]
+        futures = [(relative, job, self._image_pool.submit(self._fetch_image, session, relative, job)) for relative, job in jobs]
+        downloaded = False
+        for relative, job, future in futures:
+            try:
+                session["images_saved"][relative] = future.result()
+                del session["images_pending"][relative]
+                downloaded = True
+            except Exception as exc:
+                job.update(error=str(exc), next_attempt=time.monotonic() + 2)
+        missing = [j for j in session["images_pending"].values() if self._in_window(session, j["timestamp"])]
+        session["manifest"]["image_count"] = len(session["images_saved"])
+        session["manifest"]["missing_image_count"] = len(missing)
+        if downloaded and any(j["next_attempt"] <= time.monotonic() for j in missing):
+            # Drain image backlogs without imposing a three-images-per-poll
+            # throughput limit; failures still observe their retry delay.
+            self._wake.set()
+        return missing
 
     def _collect(self, session):
         manifest = session["manifest"]
@@ -226,6 +315,11 @@ class ProgressRecorder:
             except Exception as exc:
                 all_drained = False
                 errors.append(f"{mid}: {exc}")
+        missing = self._collect_images(session) if not self._stop.is_set() else list(session["images_pending"].values())
+        all_drained = all_drained and not missing
+        if missing:
+            detail = next((j["error"] for j in missing if j["error"]), "downloading")
+            errors.append(f"{len(missing)} scoring images pending: {detail}")
         manifest["error"] = "; ".join(errors) or None
         if manifest["state"] in {"stopping", "finalizing"}:
             timed_out = time.monotonic() - session["drain_started"] >= self.finalize_timeout
@@ -253,6 +347,7 @@ class ProgressRecorder:
         # Reapply the final window: a score can arrive between the stop click
         # and our next Scheduler poll. JSONL remains the authoritative export.
         kept = 0
+        included_images, missing_images = set(), []
         with (session["dir"] / "progress.jsonl").open(encoding="utf-8") as source, \
                 (session["dir"] / "progress.tmp").open("w", encoding="utf-8") as filtered, \
                 (session["dir"] / "progress.csv").open("w", encoding="utf-8", newline="") as table:
@@ -263,22 +358,41 @@ class ProgressRecorder:
                 timestamp = record["progress_time_unix_s"]
                 if timestamp < manifest["started_at"] or (manifest["stopped_at"] is not None and timestamp > manifest["stopped_at"]):
                     continue
-                filtered.write(line)
+                available, hashes, missing = {}, {}, []
+                for camera, relative in record.get("planned_images", record.get("images", {})).items():
+                    if relative in session["images_saved"]:
+                        available[camera] = relative
+                        hashes[camera] = session["images_saved"][relative]["sha256"]
+                        included_images.add(relative)
+                        record[f"{camera}_image"] = relative
+                    else:
+                        missing.append(camera)
+                        missing_images.append({"monitor_id": record["monitor_id"], "inference_step": record["inference_step"],
+                            "camera": camera, "error": session["images_pending"].get(relative, {}).get("error") or "image was not downloaded"})
+                        record[f"{camera}_image"] = None
+                record.update(images=available, image_sha256=hashes, missing_images=missing)
+                filtered.write(json.dumps(record, ensure_ascii=False) + "\n")
                 writer.writerow({key: record.get(key) for key in FIELDS})
                 kept += 1
         (session["dir"] / "progress.tmp").replace(session["dir"] / "progress.jsonl")
         manifest["record_count"] = kept
+        manifest.update(image_count=len(included_images), missing_image_count=len(missing_images), missing_images=missing_images)
+        if missing_images and manifest["state"] == "complete":
+            manifest["state"] = "incomplete"
         manifest["capture_quality"] = "snapshot_only" if any(
             s.get("capture_mode") == "status_snapshots" for s in manifest["sources"].values()) else "journal"
         manifest["finished_at"] = time.time()
         self._save(session)
-        archive = session["dir"] / "progress.zip"
+        archive = session["dir"] / (manifest["name"] + ".zip")
         with zipfile.ZipFile(archive, "w", compression=zipfile.ZIP_DEFLATED) as f:
-            for name in ("manifest.json", "progress.jsonl", "progress.csv"):
-                f.write(session["dir"] / name, arcname=name)
+            for name in ("manifest.json", "progress.jsonl", "progress.csv", *sorted(included_images)):
+                f.write(session["dir"] / name, arcname=name,
+                        compress_type=zipfile.ZIP_STORED if name.endswith(".png") else zipfile.ZIP_DEFLATED)
         session["closed"] = True
         session["seen"].clear()
         session["cursors"].clear()
+        session["images_pending"].clear()
+        session["images_saved"].clear()
 
     def _run(self):
         try:
@@ -315,6 +429,7 @@ class ProgressRecorder:
                         self._finish(session)
                     except Exception:
                         logger.exception("Could not finalize progress recording")
+            self._image_pool.shutdown(wait=True)
             self.client.close()
 
     def status(self):
@@ -323,7 +438,8 @@ class ProgressRecorder:
                 return {"enabled": True, "state": "idle", "output_dir": str(self.root), "error": self._error}
             m = self._last["manifest"]
             return {"enabled": True, "state": m["state"], "recording_id": m["recording_id"],
-                    "directory": str(self._last["dir"]), "record_count": m["record_count"],
+                    "directory": str(self._last["dir"]), "name": m["name"], "record_count": m["record_count"],
+                    "image_count": m["image_count"], "missing_image_count": m["missing_image_count"],
                     "video": deepcopy(m["video"]), "warnings": list(m["warnings"]),
                     "error": self._error or m["error"], "download_ready": self._last["closed"]}
 
@@ -331,7 +447,7 @@ class ProgressRecorder:
         with self._lock:
             for session in self._sessions.values():
                 if session["manifest"]["recording_id"] == recording_id and session["closed"]:
-                    return session["dir"] / "progress.zip"
+                    return session["dir"] / (session["manifest"]["name"] + ".zip")
         raise KeyError("unknown or unfinished progress recording")
 
     def close(self):
@@ -340,4 +456,5 @@ class ProgressRecorder:
         if self._thread is not None:
             self._thread.join(timeout=6)
         else:
+            self._image_pool.shutdown(wait=True)
             self.client.close()

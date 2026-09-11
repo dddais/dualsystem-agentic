@@ -469,11 +469,14 @@ function renderBridge() {
   $("bridge-record").textContent = s.recording ? "停止录制（录制中）" : "开始录制";
   $("bridge-record").setAttribute("aria-pressed", String(!!s.recording));
   const recording = status.recording || {};
-  const recordingStates = {idle: "等待录制", recording: "正在记录", stopping: "正在停止视频录制", finalizing: "正在补齐进度数据",
+  const recordingStates = {idle: "等待录制", recording: "正在记录", stopping: "正在停止视频录制", finalizing: "正在补齐评分与图片",
     complete: "记录已保存", incomplete: "记录不完整", interrupted: "记录已中断"};
   $("progress-recording-status").textContent = recording.enabled
-    ? `视频 + GRM 进度 · ${recordingStates[recording.state] || recording.state} · ${recording.record_count || 0} 条评分`
+    ? `视频 + GRM 进度 + 评分三视角 · ${recordingStates[recording.state] || recording.state} · ${recording.record_count || 0} 条评分 · ${recording.image_count || 0} 张图片`
     : "GRM 进度录制未启用；需启用 Runtime recording 配置。";
+  $("record-name-preview").textContent = ["recording", "stopping", "finalizing"].includes(recording.state) && recording.name
+    ? `本次名称：${recording.name}`
+    : `命名：采集人@模型@指令@时间@编号；指令：${status.active_execution_id ? status.execution?.subtask : status.instruction_editor?.task?.instruction || "未设置指令"}`;
   $("progress-recording-path").textContent = recording.directory ? `Runtime 保存位置：${recording.directory}` : "";
   $("progress-recording-error").textContent = [s.recording_info?.error, recording.error, ...(recording.warnings || [])].filter(Boolean).join(" · ");
   $("progress-recording-download").hidden = !recording.download_ready;
@@ -532,7 +535,9 @@ $("bridge-controls").addEventListener("click", async event => {
   if (name === "set_mode") args = {mode: button.dataset.mode};
   if (name === "set_prompt") { args = {index: Number($("bridge-prompt").value)}; edited = ["bridge-prompt"]; }
   if (name === "set_phase") { args = {phase: Number($("bridge-phase").value)}; edited = ["bridge-phase"]; }
-  if (name === "set_person") { args = {person: $("bridge-person").value}; edited = ["bridge-person"]; }
+  if (name === "set_person" || (name === "toggle_recording" && !bridgeStatus?.state?.recording)) {
+    args = {person: $("bridge-person").value}; edited = ["bridge-person"];
+  }
   if (name === "set_gripper_map") {
     edited = ["bridge-scale", "bridge-offset"];
     if (edited.some(id => !$(id).value.trim() || !Number.isFinite(Number($(id).value)))) {

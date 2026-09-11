@@ -81,6 +81,7 @@ textarea { display: block; width: 100%; min-height: 100px; resize: vertical; }
 .task-preview { background: #0d1014; border-left: 2px solid var(--accent); padding: 10px 12px; margin: 12px 0; font-size: 13px; white-space: pre-wrap; overflow-wrap: anywhere; }
 .instruction { font-size: 16px; white-space: pre-wrap; overflow-wrap: anywhere; margin: 8px 0; }
 .hint, .footer-note { font-size: 12px; color: var(--muted); margin-top: 8px; }
+#record-name-preview { overflow-wrap: anywhere; }
 .error { font-size: 13px; color: #fca5a5; overflow-wrap: anywhere; }
 .error:not(:empty) { margin-top: 8px; }
 .steps { display: flex; gap: 8px; margin-bottom: 12px; }
@@ -188,8 +189,9 @@ td:nth-child(n+2), th:nth-child(n+2) { text-align: right; font-variant-numeric: 
 <div class="panel bridge-row" data-support-any="set_phase set_prompt"><span id="bridge-digit-status" class="muted"></span><button id="bridge-digit-mode" data-support="toggle_digit_mode" data-action="toggle_digit_mode" data-shortcut="P" aria-keyshortcuts="p">切换数字键用途</button></div>
 <section class="panel" data-support="toggle_recording"><h2 class="control-heading">录制</h2>
 <div class="bridge-row"><button id="bridge-record" class="danger" data-action="toggle_recording" data-shortcut="R" aria-keyshortcuts="r">开始录制</button><label for="bridge-person">采集人</label><input id="bridge-person" type="text" maxlength="64"><button id="bridge-set-person" data-action="set_person">应用</button></div>
+<p id="record-name-preview" class="hint"></p>
 <p id="progress-recording-status" class="hint" role="status"></p><p id="progress-recording-path" class="id"></p>
-<p id="progress-recording-error" class="error" role="alert"></p><a id="progress-recording-download" class="hint" hidden>下载 GRM 进度记录（ZIP）</a></section>
+<p id="progress-recording-error" class="error" role="alert"></p><a id="progress-recording-download" class="hint" hidden>下载评分与三视角图片（ZIP）</a></section>
 <section class="panel" data-support="set_phase"><h2 class="control-heading">Phase（阶段）</h2>
 <div class="bridge-row"><label for="bridge-phase">Phase</label><select id="bridge-phase"></select><button id="bridge-set-phase" data-action="set_phase">设置阶段</button><button id="bridge-lock" data-action="toggle_phase_lock" data-shortcut="L" aria-keyshortcuts="l">锁定 phase</button></div></section>
 <section class="panel" data-support="set_prompt"><h2 class="control-heading">Prompt（训练指令）</h2>

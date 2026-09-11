@@ -2,18 +2,21 @@
 
 from copy import deepcopy
 import csv
+import hashlib
 import io
 import json
 import time
 from types import SimpleNamespace
 import urllib.error
 import zipfile
+from urllib.parse import unquote
 
 import pytest
 from fastapi.testclient import TestClient
+from PIL import Image
 
 from robot_runtime.api.app import create_app
-from robot_runtime.recording import ProgressRecorder
+from robot_runtime.recording import CAMERAS, ProgressRecorder, recording_name
 from test_bridge_adapters import eventually
 from test_manual_bridge import make_stack
 
@@ -23,6 +26,7 @@ class Journal:
 
     def __init__(self):
         self.rows, self.errors, self.calls = {}, {}, []
+        self.image_errors = {}
         self.read_at = time.time() + 100
 
     def progress_records(self, mid, execution, cursor=0):
@@ -35,6 +39,18 @@ class Journal:
                     records=deepcopy(rows[cursor:end]), next_cursor=end,
                     has_more=end < len(rows), read_at=self.read_at,
                     session_dir=f"/monitor/{mid}", complete=False)
+
+    def progress_image(self, mid, execution, step, camera, frame_set_id=None):
+        assert execution == "ex-" + mid
+        if (step, camera) in self.image_errors:
+            raise self.image_errors[step, camera]
+        return image_bytes(step, camera)
+
+
+def image_bytes(step, camera):
+    data = io.BytesIO()
+    Image.new("RGB", (5, 4), (step % 256, CAMERAS.index(camera) * 100, 42)).save(data, format="PNG")
+    return data.getvalue()
 
 
 class Scheduler:
@@ -60,9 +76,12 @@ def monitor(mid, created_at):
 
 def score(step, stamp):
     return dict(inference_step=step, inference_updated_at=stamp, progress=step / 10,
-                status="running", observation={"snapshot_requested_at": stamp - .25},
+                status="running", observation={"snapshot_requested_at": stamp - .25,
+                    "cameras": {c: {"image_sha256": hashlib.sha256(image_bytes(step, c)).hexdigest()} for c in CAMERAS}},
                 modes={"forward": {"score": .2, "progress": .3}},
-                branches={"baseline": {"progress": .1}}, comparison={"difference": .2})
+                branches={"baseline": {"progress": .1, "modes": {
+                    mode: {"score": .4, "progress": .5} for mode in ("forward", "incremental", "backward")}}},
+                comparison={"difference": .2})
 
 
 def state(key, started, ended=None, phase=None):
@@ -96,6 +115,15 @@ def export(recorder, key):
         manifest = json.loads(z.read("manifest.json"))
         rows = [json.loads(line) for line in z.read("progress.jsonl").splitlines()]
         table = list(csv.DictReader(io.StringIO(z.read("progress.csv").decode())))
+        image_paths = {name for name in z.namelist() if name.endswith(".png")}
+        assert len(image_paths) == manifest["image_count"]
+        assert image_paths == {path for row in rows for path in row["images"].values()}
+        for row, cells in zip(rows, table):
+            for camera, path in row["images"].items():
+                data = z.read(path)
+                assert data == image_bytes(row["inference_step"], camera)
+                assert hashlib.sha256(data).hexdigest() == row["image_sha256"][camera]
+                assert cells[f"{camera}_image"] == path
     assert manifest["record_count"] == len(rows) == len(table)
     assert all(row["instruction"] == "抓取 carrot" for row in rows)
     return manifest, rows, table
@@ -119,6 +147,10 @@ def test_paged_journals_capture_all_steps_across_tasks_and_final_window(stack):
         *[("one", i) for i in range(5, 13)], ("two", 1), ("two", 2)}
     assert all(0 <= row["elapsed_s"] <= 1.5 for row in rows)
     assert table[0]["forward_score"] == "0.2" and table[0]["baseline_progress"] == "0.1"
+    assert all(table[0][f"baseline_{mode}_{metric}"] == str(value)
+               for mode in ("forward", "incremental", "backward") for metric, value in (("score", .4), ("progress", .5)))
+    assert m["image_count"] == 30 and m["missing_image_count"] == 0
+    assert all(row["grm"] == next(x for x in j.rows[row["monitor_id"]] if x["inference_step"] == row["inference_step"]) for row in rows)
     assert m["sources"]["one"]["target_queries"] == ["carrot"]
     assert m["video"]["archive"] == "/robot/video.tar"
 
@@ -205,9 +237,11 @@ def test_legacy_snapshots_are_marked_and_never_advance_monitor_status(stack):
     monitors.append(monitor("one", t))
     monitors[0]["result"] = score(2, t + .1)
     r._observe(state("video", t, t + .2))
+    r._sessions["video"]["drain_started"] -= 10
     m, rows, _ = export(r, "video")
     assert m["capture_quality"] == "snapshot_only" and m["warnings"]
     assert len(rows) == 1 and rows[0]["capture_mode"] == "status_snapshots"
+    assert m["state"] == "incomplete" and m["missing_image_count"] == 3
 
 
 def test_legacy_scheduler_uses_local_window_and_warns_video_path_is_unknown(stack):
@@ -251,6 +285,7 @@ def test_download_is_limited_to_finished_registered_artifacts(stack):
     export(r, "video")
     result = client.get(f"/manual/recordings/{rid}/download")
     assert result.status_code == 200 and result.headers["content-type"] == "application/zip"
+    assert r.status()["name"] + ".zip" in unquote(result.headers["content-disposition"])
     assert zipfile.is_zipfile(io.BytesIO(result.content))
     assert client.get("/manual/recordings/progress.zip/download").status_code == 404
     assert client.get("/manual/recordings/%2e%2e%2fsecret/download").status_code == 404
@@ -270,3 +305,81 @@ def test_export_retries_after_zip_failure(stack, monkeypatch):
     assert r.status()["state"] == "finalizing" and not r.status()["download_ready"]
     monkeypatch.setattr(zipfile, "ZipFile", real_zip)
     assert export(r, "video")[0]["state"] == "complete"
+
+
+def test_missing_image_does_not_block_later_scores_and_retries_fill_it(stack):
+    r, j, _, monitors = stack
+    t = time.time()
+    monitors.append(monitor("one", t))
+    j.rows["one"] = [score(i, t + i * .01) for i in range(1, 8)]
+    j.image_errors[1, "cam_high"] = OSError("temporary image disconnect")
+    r._observe(state("video", t))
+    session = r._sessions["video"]
+    for _ in range(8):
+        r._collect(session)
+    assert r.status()["record_count"] == 7
+    assert r.status()["image_count"] == 20 and r.status()["missing_image_count"] == 1
+    j.image_errors.clear()
+    for job in session["images_pending"].values():
+        job["next_attempt"] = 0
+    r._observe(state("video", t, t + .1))
+    m, rows, _ = export(r, "video")
+    assert m["state"] == "complete" and m["image_count"] == 21 and len(rows) == 7
+
+
+@pytest.mark.parametrize("problem", ["missing", "checksum", "invalid_png"])
+def test_image_integrity_failure_is_explicit_and_survives_zip_retry(stack, monkeypatch, problem):
+    r, j, _, monitors = stack
+    t = time.time()
+    monitors.append(monitor("one", t))
+    j.rows["one"] = [score(1, t + .01)]
+    if problem == "missing":
+        j.image_errors[1, "cam_high"] = FileNotFoundError("missing original")
+    elif problem == "checksum":
+        j.rows["one"][0]["observation"]["cameras"]["cam_high"]["image_sha256"] = "bad"
+    else:
+        j.rows["one"][0]["observation"]["cameras"]["cam_high"].clear()
+        original = j.progress_image
+        j.progress_image = lambda mid, ex, step, cam, fid: b"invalid PNG" if cam == "cam_high" else original(mid, ex, step, cam, fid)
+    r._observe(state("video", t, t + .1))
+    session = r._sessions["video"]
+    session["drain_started"] -= 10
+    real_zip = zipfile.ZipFile
+    with monkeypatch.context() as patch:
+        def fail(*args, **kwargs):
+            raise OSError("disk unavailable")
+        patch.setattr(zipfile, "ZipFile", fail)
+        with pytest.raises(OSError, match="disk unavailable"):
+            r._collect(session)
+    assert zipfile.ZipFile is real_zip
+    m, rows, table = export(r, "video")
+    assert m["state"] == "incomplete" and m["image_count"] == 2 and m["missing_image_count"] == 1
+    assert m["missing_images"][0]["camera"] == "cam_high"
+    assert m["missing_images"][0]["inference_step"] == 1 and m["missing_images"][0]["error"]
+    assert rows[0]["missing_images"] == ["cam_high"] and table[0]["cam_high_image"] == ""
+
+
+def test_readable_frozen_names_and_utf8_filename_limits(stack):
+    r, _, _, _ = stack
+    t = time.time()
+    info = state("one", t, t + .1)
+    info["recording_info"].update(person="张三", model_name="run-1000", instruction="把胡萝卜放进盒子")
+    r._observe(info)
+    first = r.status()["name"]
+    assert first.startswith("张三@run-1000@把胡萝卜放进盒子@")
+    info["recording_info"]["instruction"] = "下一轮指令"
+    r._observe(info)
+    assert r.status()["name"] == first
+    m, _, _ = export(r, "one")
+    assert m["instruction"] == "把胡萝卜放进盒子"
+    assert r.archive(m["recording_id"]).name == first + ".zip"
+    name = recording_name(dict(person="人" * 64, model_name="模型" * 100,
+        instruction="/../../\\任务\n" * 200), t, "rec-12345678")
+    assert len((name + ".zip").encode()) < 256 and "/" not in name and "\\" not in name and "\n" not in name
+    # A repeated Scheduler episode name must not overwrite an existing export.
+    for key in ("two", "three"):
+        repeat = state(key, t + 1, t + 2)
+        repeat["recording_info"]["episode_name"] = first
+        r._observe(repeat)
+        export(r, key)
+    assert len({s["dir"] for s in r._sessions.values()}) == 3

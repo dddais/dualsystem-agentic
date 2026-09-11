@@ -362,11 +362,13 @@ ready 请求最多保留 15 秒，只有 loop 的轮询能续期。执行、停�
 | 首次得分后报 `missing or degraded attention steering` | 这是 loop 严格检查；查看 warning/error 中模式、`reason`、`applied` 和 `degraded`。允许 Monitor 的 baseline 降级时，将 **loop YAML** 的 `simple_loop.require_steering` 设为 false 后重启 loop |
 
 
-SAM3 当前在前两个候选的置信度差不超过 0.05 时标记 `ambiguous`，并不选定 bbox。
+未启用 tracking 的逐帧 SAM3 检测模式在前两个候选的置信度差不超过 0.05 时标记 `ambiguous`，并不选定 bbox。
 Monitor 配置 `on_missing_bbox: baseline` 时，该帧继续无 attention 干预的评分；
 下一帧仍重新检测。单纯设置 `require_steering: false` 不会解决检测歧义，也不能将
 该帧当作“成功施加了 steering”的实验样本。UI 会显示歧义且不绘制选中框，详细
 候选及置信度保存在服务器会话的 `online_pred.jsonl`。
+
+启用 tracking 时，首次绑定改为选择通过检测阈值的最高分候选，分数接近也照常返回 bbox；同分时按检测器返回顺序取第一个。之后仍锁定该实例，失跟后持续空框，不会再从剩余候选中选择目标。
 
 ## 6. 修复 `Server` 没有 `list_tools` 的启动错误
 
@@ -478,7 +480,7 @@ CUDA_VISIBLE_DEVICES=3 python -m monitor_runtime.service \
 
 后台 tracker 独立采图，只保留最新完成的一组“图像＋bbox”，GRM 不排队处理中间帧。
 “GRM 评分画面”仍与该轮分数严格对应；持续评分时不会因为堆积旧帧而越来越滞后，但延时会波动。网络/推理停顿或任务结束后，旧画面的年龄仍会增加。
-每个任务只在首帧检测并绑定一次实例，后续不再重检测。首帧无目标/歧义、失跟、框跳变或长时间断帧后，本任务持续返回空 bbox；只有结束当前任务并开始新任务才能重新绑定。默认缺失框策略下 GRM 继续评分，但不施加目标 attention，不会自动框选桌上剩下的同类物体。
+每个任务只在首帧检测并绑定一次实例：从通过检测阈值的候选中取最高分，分数接近也照常绑定，同分时按检测器返回顺序取第一个。后续不再重检测。首帧没有有效候选、失跟、框跳变或长时间断帧后，本任务持续返回空 bbox；只有结束当前任务并开始新任务才能重新绑定。默认缺失框策略下 GRM 继续评分，但不施加目标 attention，不会自动框选桌上剩下的同类物体。
 升级实例锁定修复后需要重启服务器上的 **SAM3 和 Monitor** 并开始新任务；原有从臂配置和 SSH 转发无需调整。具体状态和保守跟踪阈值见上述 `sam3_tracking.md`。
 
 回退时去掉 Monitor 的 `--tracking-config`，SAM3 改用 `sam3.yaml` 或 `sam3_fast.yaml`。
@@ -519,7 +521,7 @@ Runtime 配置见 [manual.runtime.yaml](../robot_runtime/robot_runtime/configs/m
 | `tracking.dtype`         | `bfloat16` | 控制 tracker 的计算精度。A100 上建议保持；FP32 通常更慢，跟踪准确率收益尚未验证。顶层 `dtype` 单独控制首次检测模型。                                  |
 
 
-当前策略只在首次跟踪图像中检测并绑定一次。首帧无检测或歧义，以及后续空 mask、低置信度、框跳变、断帧或跟踪异常，都会让本任务持续返回空框。调整参数不会自动找回原任务的目标，必须重新开始任务。旧配置中的 `redetect_interval_s` 已不生效，不需要通过调大它来关闭重检测。
+当前策略只在首次跟踪图像中检测并绑定一次，并选择通过检测阈值的最高分候选，不再因多个候选分数接近而拒绝初始化。首帧无有效候选，以及后续空 mask、低置信度、框跳变、断帧或跟踪异常，都会让本任务持续返回空框。调整参数不会自动找回原任务的目标，必须重新开始任务。旧配置中的 `redetect_interval_s` 已不生效，不需要通过调大它来关闭重检测。
 
 防跳框检查能拦截明显的位置跳变，但连续重叠区域内的渐进漂移仍可能来自模型本身，不能仅凭这些阈值保证物理身份准确。
 

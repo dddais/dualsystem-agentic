@@ -134,7 +134,7 @@ def create_app(runtime: RobotRuntime) -> FastAPI:
             path = runtime.recorder.archive(recording_id)
         except KeyError as exc:
             return _fail(str(exc), status=404)
-        return FileResponse(path, media_type="application/zip", filename=f"{recording_id}.zip")
+        return FileResponse(path, media_type="application/zip", filename=path.name)
 
     @app.get("/manual/app.js")
     def manual_script():
@@ -251,7 +251,10 @@ def create_app(runtime: RobotRuntime) -> FastAPI:
         if not isinstance(body.get("name"), str) or not isinstance(body.get("args", {}), dict):
             return _fail("name must be a string and args an object", status=400)
         try:
-            args = body.get("args", {})
+            args = dict(body.get("args", {}))
+            if body["name"] == "toggle_recording":
+                # Saved UI text labels recordings made before the first Start.
+                args["instruction"] = (target_input.editor()["task"] or {}).get("instruction", "")
             if body["name"] == "set_mode" and args.get("mode") == "autonomous" and "input_request_id" in args:
                 with runtime._lock:
                     check_input_ready()

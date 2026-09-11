@@ -159,6 +159,25 @@ class RemoteHTTPMonitorProvider:
             raise ValueError("progress journal page exceeds 16 MiB")
         return _unwrap(json.loads(content))
 
+    def progress_image(self, monitor_id: str, execution_id: str, inference_step: int, camera: str,
+                       frame_set_id: str | None = None) -> bytes:
+        if type(inference_step) is not int or inference_step < 1 or camera not in {
+            "cam_high", "cam_left_wrist", "cam_right_wrist"
+        }:
+            raise ValueError("invalid progress image identity")
+        query = urllib.parse.urlencode({"execution_id": execution_id})
+        path = f"/monitors/{urllib.parse.quote(monitor_id, safe='')}/records/{inference_step}/{camera}.png?{query}"
+        try:
+            with urllib.request.urlopen(self.url + path, timeout=min(self.timeout, 3.0)) as response:
+                data = response.read(16 * 1024 * 1024 + 1)
+        except urllib.error.HTTPError as exc:
+            if exc.code == 404 and frame_set_id:
+                return self.frame_image(frame_set_id, camera)  # Older Monitor, while its preview is retained.
+            raise
+        if not data.startswith(b"\x89PNG\r\n\x1a\n") or len(data) > 16 * 1024 * 1024:
+            raise ValueError("progress image is not a valid bounded PNG response")
+        return data
+
     def frame_image(self, frame_set_id: str, camera: str) -> bytes:
         if not re.fullmatch(r"[a-f0-9]{32}", frame_set_id) or camera not in {
             "cam_high", "cam_left_wrist", "cam_right_wrist"

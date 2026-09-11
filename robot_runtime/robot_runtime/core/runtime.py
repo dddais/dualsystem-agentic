@@ -605,6 +605,8 @@ class RobotRuntime:
                 if name not in self.dashboard_allowed_actions():
                     raise ValueError("scheduler action is unavailable in the current runtime phase")
                 cancelled = self._cancelled.get(self._active_execution_id)
+                if name == "toggle_recording" and self._active_execution_id:
+                    args = {**args, "instruction": self._requests[self._active_execution_id].subtask}
             # Keep the runtime state lock free for the independent emergency
             # stop path while scheduler I/O is pending. The execution token
             # prevents a delayed status reply from issuing a resume afterwards.
