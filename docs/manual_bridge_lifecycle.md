@@ -13,13 +13,15 @@
 | 启动中 / 执行中 | 空闲 I | 取消本轮、暂停 Scheduler、清理动作队列，完成停止后关闭本轮 Monitor |
 | 执行中，GRM 判定成功或失败 | auto_stop: false 时继续执行和评分；true 时自动停止 | false 保持执行中；true 停止后等待恢复选择 |
 | 等待恢复 | Homing H | 归位中，等待配置的归位时间后进入 ready |
+| 等待恢复 | Back B（新版 X1 Pro 支持） | 倒放双臂轨迹和夹爪动作，退到上次抓取准备开始前 10 个策略步；执行端报告完成后进入 ready |
 | 等待恢复 | 遥操作 T | 进入调整；VLA 自主运行和 GRM 评分保持停止 |
 | 调整中 | 空闲 I | 结束遥操作，清理动作队列并等待停止延时，进入 ready |
 | 软件停止已锁存 | Homing H | 归位成功后解除锁存；此时不允许通过遥操作调整解除锁存 |
 
-停止后的两条正常路径为：
+停止后的正常路径为：
 
 - 停止 → Homing 归位 → ready → 下一轮。
+- 停止 → Back 回退 → ready → 下一轮。详见 [Back 轨迹回退](manual_bridge_back.md)。
 - 停止 → 遥操作调整 → 空闲结束调整 → ready → 下一轮。
 
 **调整完成由切回空闲表达**，不额外添加“已调整”确认按钮。执行中不允许直接切遥操作，
@@ -86,7 +88,7 @@ MCP 中继续使用 `DUAL_FRANKA_ENABLE_RESET: "true"`，同时开放 `reset_tas
 
 ## 状态一致性与失败处理
 
-- `/manual/bridge/action` 的 `set_mode` / `homing` 通过 Runtime 生命周期处理，不直接代理模式命令。
+- `/manual/bridge/action` 的 `set_mode` / `homing` / `back` 通过 Runtime 生命周期处理，不直接代理模式命令。
   等待操作时携带当前 `args.request_id`；执行中主动空闲携带当前 `args.execution_id`。
   ready 阶段按 A 时携带 `args.input_request_id` 和 `args.instruction_revision`。
   网页自动填写这些字段，用于拒绝过期操作。重复提交同一请求和动作不会重发命令。

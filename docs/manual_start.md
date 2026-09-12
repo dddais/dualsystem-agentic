@@ -368,7 +368,7 @@ Monitor 配置 `on_missing_bbox: baseline` 时，该帧继续无 attention 干�
 该帧当作“成功施加了 steering”的实验样本。UI 会显示歧义且不绘制选中框，详细
 候选及置信度保存在服务器会话的 `online_pred.jsonl`。
 
-启用 tracking 时，首次绑定改为选择通过检测阈值的最高分候选，分数接近也照常返回 bbox；同分时按检测器返回顺序取第一个。之后仍锁定该实例，失跟后持续空框，不会再从剩余候选中选择目标。
+启用 tracking 时，首次绑定改为选择通过检测阈值的最高分候选，分数接近也照常返回 bbox；同分时按检测器返回顺序取第一个。默认 `locked` 模式失跟后持续空框；可选 `hybrid` 模式会重新文本检测，可能选中另一个同类物体，见文末模式说明。
 
 ## 6. 修复 `Server` 没有 `list_tools` 的启动错误
 
@@ -480,14 +480,35 @@ CUDA_VISIBLE_DEVICES=3 python -m monitor_runtime.service \
 
 后台 tracker 独立采图，只保留最新完成的一组“图像＋bbox”，GRM 不排队处理中间帧。
 “GRM 评分画面”仍与该轮分数严格对应；持续评分时不会因为堆积旧帧而越来越滞后，但延时会波动。网络/推理停顿或任务结束后，旧画面的年龄仍会增加。
-每个任务只在首帧检测并绑定一次实例：从通过检测阈值的候选中取最高分，分数接近也照常绑定，同分时按检测器返回顺序取第一个。后续不再重检测。首帧没有有效候选、失跟、框跳变或长时间断帧后，本任务持续返回空 bbox；只有结束当前任务并开始新任务才能重新绑定。默认缺失框策略下 GRM 继续评分，但不施加目标 attention，不会自动框选桌上剩下的同类物体。
-升级实例锁定修复后需要重启服务器上的 **SAM3 和 Monitor** 并开始新任务；原有从臂配置和 SSH 转发无需调整。具体状态和保守跟踪阈值见上述 `sam3_tracking.md`。
+默认 `tracking.mode: locked` 每个任务只在首帧检测并绑定一次实例：从通过检测阈值的候选中取最高分，分数接近也照常绑定，同分时按检测器返回顺序取第一个。后续不再重检测。首帧没有有效候选、失跟、框跳变或长时间断帧后，本任务持续返回空 bbox；只有结束当前任务并开始新任务才能重新绑定。默认缺失框策略下 GRM 继续评分，但不施加目标 attention，不会通过文本检测自动框选桌上剩下的同类物体；视频模型自身仍可能漂移。
+
+尝试可选的“视频跟踪 + 文本重检测”，SAM3 终端改用：
+
+```bash
+CUDA_VISIBLE_DEVICES=3 python -m sam3_runtime.service --config configs/sam3_tracker_hybrid.yaml
+```
+
+该配置设置 `tracking.mode: hybrid`、`redetect_interval_s: 5.0`、`continuity_iou: 0.0`。正常时逐帧视频跟踪，每隔约 5 秒文本检测；周期检测只接受与**当前帧**跟踪框匹配的候选，没有匹配就保留正常的视频轨迹。失跟时在当前图像上重新检测，取最高分候选；没有候选就返回本帧空框，在后续更新重试。重检测会额外增加该轮检测和初始化耗时，但 GRM 仍独立读取最新完成的快照。
+
+**`hybrid` 允许重新选实例**：例如原来的 `left pen` 被拿起并失跟后，重检测可能选到桌上剩下的另一支笔。需要“宁愿没有目标，也不自动换目标”时保留 `locked`；若只想取消对快速移动的硬拒绝，可在 `locked` 下单独设置 `continuity_iou: 0.0`，不会启用文本重检测。
+
+首次升级这两种策略需要同步并重启服务器上的 **SAM3 和 Monitor**，然后开始新任务；旧 Monitor 只接受锁定策略，会拒绝混合模式的结果。升级后，仅切换 SAM3 策略时重启 SAM3 并开始新任务即可。从臂 Runtime、Loop 和 SSH 转发的配置不变，单分支、双分支及 forward-only 均支持。
+
+检查进程实际加载的配置，而不只看磁盘 YAML：
+
+```bash
+curl --noproxy '*' -s http://127.0.0.1:8878/health | python -m json.tool
+```
+
+查看 `tracking_config.mode`、`tracking_config.continuity_iou`、`tracking_config.min_score` 和 `tracking_identity_policy`。两种模式分别返回 `initial_instance` / `text_redetection`。
 
 回退时去掉 Monitor 的 `--tracking-config`，SAM3 改用 `sam3.yaml` 或 `sam3_fast.yaml`。
 
 ## Tracking 参数调整参考
 
-抓取笔等细长物体时，优先提高**新图像进入 tracker 的实际频率**，再调整失跟阈值。帧间隔越长，目标被拿起时的位置变化越大，越容易触发当前的保守失跟判定。
+抓取笔等细长物体时，应先查看实际失跟原因，尤其是相邻框 IoU 的硬拒绝，再提高**新图像进入 tracker 的实际频率**。帧间隔越长，目标被拿起时的位置变化越大，正确的跟踪框也可能完全不重叠。
+
+2026-09-11 排查的最近 10 个会话中，9 个发生失跟，原因均为 `discontinuous_bbox`，并非 `low_score`；当时运行进程确实加载了 `min_score: 0.1`。对其中一个会话保存的 54 张评分图像做真实 SAM3 离线回放，笔被提起时，原视频模型仍输出正确目标框，存在分数约 `0.973`，但相邻框 IoU 为 `0`，旧的 `match_iou: 0.1` 硬判定会拒绝它。现在已将这项检查独立为 `continuity_iou`，可设为 `0` 关闭。该回放使用保存的 GRM 快照和首个已发布框初始化，不是完整后台视频流的精确复现，不能代表所有场景的跟踪准确率。
 
 以下数值按 2026-09-11 工作区配置记录，以启动命令实际指定的 YAML 为准。Runtime 的配置在从臂 `dualsystem-agentic` 仓库，SAM3 和 Monitor 的配置在服务器 `Robo-Dopamine-delivery` 仓库。
 
@@ -508,20 +529,23 @@ Runtime 配置见 [manual.runtime.yaml](../robot_runtime/robot_runtime/configs/m
 
 ### 2. 实例跟踪与失跟判定
 
-配置见服务器的 [sam3_tracker.yaml](../../Robo-Dopamine-delivery/configs/sam3_tracker.yaml)。顶层参数用于首次文本检测，`tracking` 下的参数用于连续实例跟踪。
+配置见服务器的 [sam3_tracker.yaml](../../Robo-Dopamine-delivery/configs/sam3_tracker.yaml) 和 [sam3_tracker_hybrid.yaml](../../Robo-Dopamine-delivery/configs/sam3_tracker_hybrid.yaml)。顶层参数用于文本检测，`tracking` 下的参数用于连续跟踪及恢复策略。
 
 
 | 参数                       | 当前值        | 作用与调整建议                                                                                                   |
 | ------------------------ | ---------- | --------------------------------------------------------------------------------------------------------- |
-| `tracking.min_score`     | `0.5`      | 跟踪目标存在分数的最低要求。提高会更早拒绝不可靠结果；降低可能减少漏跟，也更容易接受错误结果。先保持。存在分数不是物理身份的可信概率，即使为 `1.0` 也不能证明没有漂移。                   |
-| `tracking.match_iou`     | `0.1`      | 本帧框与上一有效框的最小重叠比例，范围 `(0, 1]`。提高更严格，但快速运动、遮挡导致框缩小时更容易失跟；降低放宽位移容忍度，也削弱防跳框保护。建议先保持，优先提高新帧频率。                 |
-| `tracking.max_gap_s`     | `2.0`      | 两次服务端 tracker 更新的间隔超过此值就终止定位。增大可容忍卡顿，但不能补回中间帧，较大的位移也更难判断身份。按“宁愿没有目标”的策略，先保持。                              |
+| `tracking.mode`          | 原配置 `locked`；混合配置 `hybrid` | `locked` 失跟后不重选；`hybrid` 周期检测并在失跟后重新检测，允许选择其他实例。 |
+| `tracking.min_score`     | 当前部署及混合配置 `0.1`；类默认 `0.5` | 外层目标存在分数阈值。当前上游 SAM3 在存在分数不超过 `0.5` 时已经清空 mask，因此外层降到 `0.1` 也无法恢复这类空框，更不能解决 IoU 拒绝。存在分数不是物理身份的可信概率。 |
+| `tracking.continuity_iou` | 原配置 `0.1`；混合配置 `0.0` | 相邻有效框的最小 IoU，范围 `[0, 1]`；`0` 关闭硬拒绝。细笔快速移动可能正确但 IoU 为 0；提高会更容易误判失跟。关闭也会放过模型的大幅漂移。 |
+| `tracking.match_iou`     | `0.1`      | `hybrid` 周期检测候选与**本帧 tracker 框**的匹配阈值，范围 `(0, 1]`。匹配失败会保留有效视频轨迹。旧配置未写 `continuity_iou` 时，`locked` 仍将此值作为相邻帧硬阈值以保持兼容。 |
+| `tracking.redetect_interval_s` | 混合配置 `5.0` | `hybrid` 正常跟踪时的文本检测间隔；调小增加检测与初始化开销。失跟时立即检测，无候选则在后续更新重试，不等待此间隔。`locked` 忽略此参数。 |
+| `tracking.max_gap_s`     | `2.0`      | 两次服务端更新间隔超过此值则释放旧视频状态；`locked` 持续空框，`hybrid` 用当前帧重检测。增大可容忍卡顿，但不能补回中间帧。 |
 | `tracking.memory_frames` | `32`       | 保存最近历史的上限，另外保留初始提示帧；不得低于模型 memory/pointer 窗口要求，当前模型至少为 `16`。增大占用更多显存，不意味着模型自动利用全部历史，也不能恢复已终止的定位。先保持 `32`。 |
-| 顶层 `threshold`           | `0.3`      | 首次文本检测的候选筛选阈值。提高可能漏掉初始目标；它无法改善绑定后的跟踪。                                                                     |
-| `tracking.dtype`         | `bfloat16` | 控制 tracker 的计算精度。A100 上建议保持；FP32 通常更慢，跟踪准确率收益尚未验证。顶层 `dtype` 单独控制首次检测模型。                                  |
+| 顶层 `threshold`           | `0.3`      | 文本检测的候选筛选阈值，影响首次绑定和 `hybrid` 重检测；与视频存在分数阈值不同。 |
+| `tracking.dtype`         | `bfloat16` | 控制 tracker 的计算精度。A100 上建议保持；FP32 通常更慢，跟踪准确率收益尚未验证。顶层 `dtype` 单独控制文本检测模型。 |
 
 
-当前策略只在首次跟踪图像中检测并绑定一次，并选择通过检测阈值的最高分候选，不再因多个候选分数接近而拒绝初始化。首帧无有效候选，以及后续空 mask、低置信度、框跳变、断帧或跟踪异常，都会让本任务持续返回空框。调整参数不会自动找回原任务的目标，必须重新开始任务。旧配置中的 `redetect_interval_s` 已不生效，不需要通过调大它来关闭重检测。
+默认 `locked` 策略只绑定一次，首帧无候选或后续失跟均持续空框；`hybrid` 会在当前图像中重检测恢复，首次和失跟后均选择最高分候选。两种模式都不会在会话过期、关闭或服务重启后，为旧任务的后续 HTTP 请求重新创建会话，必须开始新任务。
 
 防跳框检查能拦截明显的位置跳变，但连续重叠区域内的渐进漂移仍可能来自模型本身，不能仅凭这些阈值保证物理身份准确。
 
@@ -530,12 +554,12 @@ Runtime 配置见 [manual.runtime.yaml](../robot_runtime/robot_runtime/configs/m
 `sam3_tracker.yaml` 中两个设备参数相互独立：
 
 ```yaml
-device: cuda:3           # 首次文本检测模型
+device: cuda:0           # 文本检测模型
 tracking:
-  device: cuda:0         # 后续连续 tracker
+  device: cuda:0         # 连续 tracker
 ```
 
-这是本节写入时工作区的配置，不是所有部署都适用的推荐值。**只改顶层** `device` **不会把 tracker 搬到同一张卡。** 如果 SAM3 进程可见所有 GPU，上述配置会把 tracker 放到物理 GPU 0；若 GRM 也使用它，资源争用会拉长跟踪周期。应优先让 tracker 使用负载较低的 GPU。
+当前两个配置文件均使用上述设置。**只改顶层** `device` **不会同步修改** `tracking.device`。如果进程可见所有 GPU，两者会使用物理 GPU 0；若该卡还有高负载 GRM 等任务，资源争用会拉长跟踪周期。应优先让 tracker 使用负载较低的 GPU。
 
 YAML 中的编号是当前进程可见设备的编号，必须与 `CUDA_VISIBLE_DEVICES` 一起判断。例如使用上节的命令：
 
@@ -556,7 +580,7 @@ CUDA_VISIBLE_DEVICES=3 python -m sam3_runtime.service --config configs/sam3_trac
 | SAM3 `tracking.session_ttl_s` / `max_sessions` | `60.0` / `8`              | 回收闲置会话、限制会话数量。旧任务会话过期后返回空框，不重新初始化。                                                      |
 | Monitor `interval`                             | Monitor 主配置               | 一轮 GRM 推理完成后的等待时间，影响评分频率，不直接控制后台 tracker。                                               |
 | Loop 的 Monitor 轮询周期                            | Loop 配置                   | 影响何时读取已发布的评分，不直接控制后台 tracker。                                                           |
-| `on_missing_bbox`                              | steering 配置，默认 `baseline` | 决定缺失 bbox 时 GRM 如何处理：`baseline` 继续评分但不施加目标 attention；`error` 报告缺失错误。两者都不会触发 tracker 重选。 |
+| `on_missing_bbox`                              | steering 配置，默认 `baseline` | 决定缺失 bbox 时 GRM 如何处理：`baseline` 继续评分但不施加目标 attention；`error` 报告缺失错误。它不控制重检测；重检测由 SAM3 的 `tracking.mode` 决定。 |
 
 
 
@@ -564,10 +588,10 @@ CUDA_VISIBLE_DEVICES=3 python -m sam3_runtime.service --config configs/sam3_trac
 ### 5. 建议的调整顺序与验证方法
 
 1. 确认实际 Runtime 配置使用 `camera.cache_s: 0.1`，后台 `poll_interval_s: 0.1`，并核对 tracker 的 GPU 分配。
-2. 先保留 `quality: 90`、原图尺寸、`min_score: 0.5`、`match_iou: 0.1`、`max_gap_s: 2.0` 和 `memory_frames: 32`。在相似场景下逐项调整，避免同时改动多个阈值后无法判断原因。
-3. 查看每轮结果 `modes.<mode>.steering.grounding.after_cam_high` 中的 `tracking_state`、`loss_reason`、`tracker_frame_index` 和 `timing`。`discontinuous_bbox` 重点检查帧率和运动幅度；`update_gap` 检查取图、网络及 GPU 卡顿；`empty_mask` / `low_score` 检查遮挡和图像细节；`session_missing` 检查服务重启或会话过期。
+2. 先确定模式：禁止文本重选用 `locked`，希望恢复定位用 `hybrid`。若失跟原因为 `discontinuous_bbox`，可将 `continuity_iou` 设为 `0.0` 做对照；单纯降低 `min_score` 无效。其余先保留原图尺寸、`quality: 90`、`match_iou: 0.1`、`max_gap_s: 2.0` 和 `memory_frames: 32`，逐项调整。
+3. 查看每轮结果 `modes.<mode>.steering.grounding.after_cam_high` 中的 `tracking_state`、`loss_reason`、`last_loss`、`initialization_count` 和 `timing`。`last_loss` 保留触发失跟的原始图像哈希、框、分数和 IoU 等诊断，不是当前可用 bbox；混合模式恢复后也会保留。`update_gap` 检查取图、网络及 GPU 卡顿；`empty_mask` / `low_score` 检查遮挡和图像细节；`session_missing` 检查服务重启或会话过期。周期检测与恢复还可查看 `detection_reason` / `detection_status`。
 4. 结合 `observation.tracking.cycle_ms` 和 `input_age_at_read_s` 看后台周期与图像年龄。`cycle_ms` 不包含循环末尾的补等待，也不能单独代表真实新帧频率；即使已失跟，后台仍会发布新的空框快照，所以 `frames_processed` 增长不等于成功跟踪帧数增长。
-5. 结束当前任务后应用配置：Runtime 的 `camera.*` 改动需要重启从臂 Runtime；`tracking.yaml`、steering 配置或 Monitor 主配置改动需要重启 Monitor；`sam3_tracker.yaml` 和 SAM3 的 `CUDA_VISIBLE_DEVICES` 改动需要重启 SAM3。然后开始新任务，让 tracker 从新的首帧绑定目标。
+5. 结束当前任务后应用配置：Runtime 的 `camera.*` 改动需要重启从臂 Runtime；`tracking.yaml`、steering 配置或 Monitor 主配置改动需要重启 Monitor；SAM3 YAML 和 SAM3 的 `CUDA_VISIBLE_DEVICES` 改动需要重启 SAM3。首次升级混合模式需同步并重启 SAM3 和 Monitor。之后开始新任务，并通过 `/health` 核对实际参数。
 
 ## GRM 只运行 forward 模式
 

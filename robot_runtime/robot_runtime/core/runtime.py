@@ -520,13 +520,13 @@ class RobotRuntime:
             if self._active_execution_id:
                 return ["idle"]
             if self._recovery_required:
-                return ["homing"]
+                return ["homing"] + (["back"] if self.robot_driver.supports_back() else [])
             return []
 
     def dashboard_lifecycle_action(self, control: str, args: JsonDict) -> JsonDict:
         # This path must remain available while the worker holds _driver_lock
         # waiting for an operator choice. Never proxy mode changes directly.
-        if not isinstance(control, str) or control not in {"idle", "teleop", "autonomous", "homing"}:
+        if not isinstance(control, str) or control not in {"idle", "teleop", "autonomous", "homing", "back"}:
             raise ValueError("unsupported VLA control")
         if "request_id" in args and not isinstance(args["request_id"], str):
             raise ValueError("request_id must be a string")
@@ -546,7 +546,7 @@ class RobotRuntime:
                     raise ValueError("pending request_id is required; refresh the controls")
                 return self.robot_driver.request_action(pending["request_id"], control)
             execution_id = args.get("execution_id")
-            if execution_id != self._active_execution_id and not (control == "homing" and (self._estop_latched or self._recovery_required)
+            if execution_id != self._active_execution_id and not (control in {"homing", "back"} and (self._estop_latched or self._recovery_required)
                                                                  and execution_id == self._latest_execution_id):
                 raise ValueError("execution_id is stale; refresh the controls")
             if control == "idle":
@@ -558,7 +558,10 @@ class RobotRuntime:
             else:
                 # A Home click can arrive before the loop's recovery RPC, or
                 # after that RPC failed. It must not require a second click.
-                self.robot_driver.request_home()
+                if control == "back":
+                    self.robot_driver.request_back()
+                else:
+                    self.robot_driver.request_home()
                 operation = lambda: self.recover({"execution_id": execution_id})
                 self._resetting = True
             emergency_generation = self._emergency_generation
@@ -566,7 +569,7 @@ class RobotRuntime:
             def run():
                 try:
                     with self._lock:
-                        if control == "homing" and emergency_generation != self._emergency_generation:
+                        if control in {"homing", "back"} and emergency_generation != self._emergency_generation:
                             self._resetting = False
                             return
                     operation()
@@ -594,8 +597,8 @@ class RobotRuntime:
             return sorted(driver.SETTINGS)
 
     def dashboard_action(self, name: str, args: JsonDict) -> JsonDict:
-        if name in {"set_mode", "homing"}:
-            return self.dashboard_lifecycle_action("homing" if name == "homing" else args.get("mode"), args)
+        if name in {"set_mode", "homing", "back"}:
+            return self.dashboard_lifecycle_action(name if name in {"homing", "back"} else args.get("mode"), args)
         # A manual handoff holds _driver_lock; reject promptly rather than
         # queueing a stale button behind several minutes of operator waiting.
         if not self._driver_lock.acquire(blocking=False):

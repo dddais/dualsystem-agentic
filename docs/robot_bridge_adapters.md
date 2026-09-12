@@ -108,6 +108,9 @@ PYTHONPATH=src python examples/run_simple_robot.py \
    `robot.auto_stop: true` 时，loop 收到 GRM 终态后自动执行这一步。
 4. 停止后选择“Homing / 归位”（H），等 `reset_delay_s` 后返回 ready；或选择“遥操作 / 调整”（T），
    调整完成后再切空闲（I），停止遥操作并返回 ready。调整分支不发送 homing。
+   更新 Robot Server 和 Scheduler 后，也可选“Back / 回退”（B），沿双臂已下发轨迹
+   和夹爪动作倒放，退到上次抓取准备开始前 10 个策略步，执行完成后返回 ready。
+   语义、参数、更新要求和验证见 [Back 轨迹回退](manual_bridge_back.md)。
 5. 下一轮直接点击 A，持续复用已保存的 instruction 和检测目标，直到修改并再次保存。
    执行或恢复期间保存只影响下一次开始；每轮仍建立新的 Monitor 和参考帧。
 
@@ -149,6 +152,7 @@ latency_step / move_steps、单步、夹爪映射和日志。参考帧准备及�
 | `0`–`9` | 设置当前用途对应的 Phase / Prompt，索引从 0 开始 |
 | `Space` | manual_bridge 不设全局操作；原 manual 仍用于人工确认 |
 | `H` | 恢复阶段执行 Homing 归位 |
+| `B` | 恢复阶段执行 Back；需要新版 robot-bridge 和 X1 Pro 控制器支持 |
 
 Record 现支持同步保存 GRM 全量进度、视频关联信息和可下载的 JSONL / CSV。
 保存位置、离线绘图和三端更新要求见 [视频与 GRM 进度录制](manual_recording.md)。
@@ -162,9 +166,10 @@ Record 现支持同步保存 GRM 全量进度、视频关联信息和可下载�
 禁止切换 Prompt。`P` 同步切换 Scheduler 的 `digit_mode`，与 Scheduler UI / 终端
 共享状态。快捷键不会跳过参考帧准备或人工交接，也不会通过 `H` 直接发出裸 homing。
 
-指令复用及控制与恢复功能更新 Runtime / loop 所在机器的 `dualsystem-agentic`；
+原有指令复用及归位／调整功能更新 Runtime / loop 所在机器的 `dualsystem-agentic`；
 `auto_stop: false` 的持续监控还需要更新 GRM 服务器的 `Robo-Dopamine-delivery` 并重启 Monitor。
-重启 Runtime 和 loop / MCP，刷新 `/manual` 后开始新任务。无需更新 robot-bridge、Policy Server 或 SAM3。
+重启 Runtime 和 loop / MCP，刷新 `/manual` 后开始新任务。这些已有功能无需更新 robot-bridge、Policy Server 或 SAM3。
+新增 Back 另需更新 robot-bridge 的 Robot Server 和 Scheduler，见 [回退部署说明](manual_bridge_back.md#部署与配置)。
 完整语义和异常处理见 [状态与自动停止规范](manual_bridge_lifecycle.md#可选自动停止)。
 可用 `python tests/validate_manual_shortcuts.py` 做浏览器回归检查（需 Playwright / Chromium，模拟硬件）。
 
@@ -177,7 +182,7 @@ HTTP 客户端可使用：
 | `POST /manual/instruction` | 保存下次开始使用的模板或完整指令，携带保存版本；不会启动执行 |
 | `POST /manual/task` | 兼容原 manual / 旧客户端的逐轮任务提交 |
 | `GET /manual/bridge/status` | Scheduler 当前状态、本轮匹配 prompt、Runtime 当前允许的辅助动作 |
-| `POST /manual/bridge/action` | `set_mode` / `homing` 驱动生命周期；ready 的 A 携带 input_request_id + instruction_revision，交接使用 request_id，执行中停止使用 execution_id；其他动作按辅助控制检查 |
+| `POST /manual/bridge/action` | `set_mode` / `homing` / `back` 驱动生命周期；ready 的 A 携带 input_request_id + instruction_revision，交接使用 request_id，执行中停止使用 execution_id；其他动作按辅助控制检查 |
 | `GET /manual/bridge/log?target=scheduler&lines=200` | scheduler / policy / robot / master 日志，经 Runtime 转发 |
 
 新模式的 `/manual/ack` 返回 409，不能用人工确认绕过真实命令。

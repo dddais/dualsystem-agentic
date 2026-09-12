@@ -21,11 +21,13 @@ class _ControlRequest(_OperatorRequest):
     result: dict = field(default_factory=dict)
     choice: str | None = None
     allow_adjustment: bool = False
+    allow_back: bool = False
     trigger: str = "operator"
 
     def public(self):
         return {**super().public(), "phase": self.phase, "error": self.error,
-                "choice": self.choice, "allow_adjustment": self.allow_adjustment, "trigger": self.trigger}
+                "choice": self.choice, "allow_adjustment": self.allow_adjustment,
+                "allow_back": self.allow_back, "trigger": self.trigger}
 
 
 class ManualBridgeRobotDriver(ManualRobotDriver):
@@ -50,6 +52,7 @@ class ManualBridgeRobotDriver(ManualRobotDriver):
         self._operator_stop_ids = set()
         self._requested_controls = set()
         self._home_requested = False
+        self._back_requested = False
         self._start_requested = set()
 
     def execute(self, request, execution):
@@ -70,6 +73,13 @@ class ManualBridgeRobotDriver(ManualRobotDriver):
     def request_home(self):
         with self._lock:
             self._home_requested = True
+
+    def request_back(self):
+        with self._lock:
+            self._back_requested = True
+
+    def supports_back(self):
+        return {"back", "cancel_back"}.issubset(self.bridge._last_state.get("actions", []))
 
     def recover(self, *, allow_adjustment=True):
         with self._lock:
@@ -104,7 +114,8 @@ class ManualBridgeRobotDriver(ManualRobotDriver):
         if pending.phase != "waiting":
             return []
         return {"execute": ["autonomous"], "stop": ["idle"], "reset": ["homing"],
-                "recover": ["homing"] + (["teleop"] if pending.allow_adjustment else [])}[pending.action]
+                "recover": ["homing"] + (["back"] if pending.allow_back else [])
+                + (["teleop"] if pending.allow_adjustment else [])}[pending.action]
 
     def _wait(self, action, execution_id, instruction, *, allow_adjustment=False):
         with self._lock:
@@ -117,7 +128,8 @@ class ManualBridgeRobotDriver(ManualRobotDriver):
             if pending and (pending.action, pending.execution_id) != (action, execution_id):
                 raise RuntimeError(f"operator is still handling {pending.action}")
             if owner:
-                pending = _ControlRequest(action, execution_id, instruction, allow_adjustment=allow_adjustment)
+                pending = _ControlRequest(action, execution_id, instruction, allow_adjustment=allow_adjustment,
+                                          allow_back=allow_adjustment and self.supports_back())
                 self._pending = pending
                 if action == "execute" and execution_id in self._start_requested:
                     self._start_requested.remove(execution_id)
@@ -130,6 +142,10 @@ class ManualBridgeRobotDriver(ManualRobotDriver):
                 elif action in {"reset", "recover"} and self._home_requested:
                     self._home_requested = False
                     pending.choice, pending.phase = "homing", "queued"
+                    pending.clicked.set()
+                elif action == "recover" and self._back_requested and pending.allow_back:
+                    self._back_requested = False
+                    pending.choice, pending.phase = "back", "queued"
                     pending.clicked.set()
         if owner:
             try:
@@ -144,6 +160,8 @@ class ManualBridgeRobotDriver(ManualRobotDriver):
                     result = self.bridge.execute(*self._execute_args, cancelled=pending.cancelled)
                 elif action == "stop":
                     result = self.bridge.stop(execution_id)
+                elif action == "recover" and pending.choice == "back":
+                    result = self.bridge.back(cancelled=pending.cancelled)
                 elif action == "recover" and pending.choice == "teleop":
                     self.bridge.begin_adjustment(cancelled=pending.cancelled)
                     with self._lock:
@@ -191,6 +209,7 @@ class ManualBridgeRobotDriver(ManualRobotDriver):
     def cancel_pending(self, execution_id=None):
         with self._lock:
             self._home_requested = False
+            self._back_requested = False
             if execution_id is not None:
                 self._start_requested.discard(execution_id)
             else:
@@ -273,7 +292,8 @@ class ManualBridgeRobotDriver(ManualRobotDriver):
 
     def capabilities(self):
         return {**super().capabilities(), "driver": "manual_bridge",
-                "operator_triggered": True, "reset_completion": "fixed_delay"}
+                "operator_triggered": True, "reset_completion": "fixed_delay",
+                "back_completion": "sdk_dispatch_and_delay"}
 
     def close(self):
         self.cancel_pending()

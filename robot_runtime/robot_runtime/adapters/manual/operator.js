@@ -10,19 +10,19 @@ const bridgeActions = {
   execute: ["等待启动", "参考帧已就绪。在 VLA 控制中选择自主运行，设置本轮指令并启动评分。"],
   stop: ["等待停止", "在 VLA 控制中选择空闲，停止本轮执行与评分。"],
   reset: ["等待归位", "在 VLA 控制中选择 Homing，完成后进入下一轮。"],
-  recover: ["等待恢复", "选择 Homing 归位，或遥操作调整。调整完成后切空闲，进入下一轮。"]
+  recover: ["等待恢复", "选择 Homing 归位、Back 倒放轨迹和夹爪动作以退回上次抓取准备之前，或遥操作调整。"]
 };
 function loopState() {
   const p = status?.pending;
   if (p?.phase === "adjusting") return ["调整中", "通过遥操作调整机械臂和场景，完成后选择空闲；本阶段不运行 GRM。"];
   if (p?.phase === "finishing") return ["结束调整", "正在切回空闲并清理动作队列，请等待完成。"];
-  if (p && p.phase !== "waiting") return [p.action === "stop" ? "停止中" : p.choice === "homing" ? "归位中" : p.choice === "teleop" ? "进入调整" : "启动中", "正在执行命令，请等待完成。"];
+  if (p && p.phase !== "waiting") return [p.action === "stop" ? "停止中" : p.choice === "homing" ? "归位中" : p.choice === "back" ? "回退中" : p.choice === "teleop" ? "进入调整" : "启动中", "正在执行命令，请等待完成。"];
   if (p) return bridgeActions[p.action];
   if (status?.estop_latched) return ["软件停止已锁存", "完成 Homing 归位后才能开始下一轮。"];
   if (status?.active_execution_id) return status.execution?.driver_result?.executed
     ? ["执行中", "正在运行本轮指令并评分。选择空闲可以提前结束本轮。"]
     : ["准备参考帧", "已请求开始；Monitor 就绪后将启动本轮 VLA。"];
-  if (status?.recovery_required) return ["已停止", "等待 loop 进入恢复阶段，然后选择归位或遥操作调整。"];
+  if (status?.recovery_required) return ["已停止", "等待 loop 进入恢复阶段，然后选择归位、回退或遥操作调整。"];
   if (status?.input?.task) return ["准备启动", "已请求开始，等待 loop 准备本轮 Monitor。"];
   return ["等待任务", "保存指令后按自主运行（A）开始；后续循环可直接复用。"];
 }
@@ -458,7 +458,8 @@ function renderBridge() {
       && status.input?.input_modes?.includes("instruction")) lifecycle.push("autonomous");
   for (const button of document.querySelectorAll("#bridge-modes [data-control]")) {
     const control = button.dataset.control;
-    const supportedControl = control !== "teleop" || (supported.includes("set_mode") && (s.modes || []).includes("teleop"));
+    const supportedControl = (control !== "teleop" || (supported.includes("set_mode") && (s.modes || []).includes("teleop")))
+      && (control !== "back" || supported.includes("back"));
     button.disabled = !supportedControl || !lifecycle.includes(control)
       || (control === "autonomous" && (draftDirty || sendingTarget || (!isReady() && !!bridgeStatus?.selection_error)));
     button.setAttribute("aria-pressed", String(control === s.mode));
@@ -508,10 +509,10 @@ $("bridge-modes").addEventListener("click", async event => {
     args.input_request_id = status.input.request_id;
     args.instruction_revision = status.instruction_editor.revision;
   } else if (status.pending) args.request_id = status.pending.request_id;
-  if (control !== "homing") args.mode = control;
+  if (!["homing", "back"].includes(control)) args.mode = control;
   bridgeSending = true; renderControls();
   try {
-    await request("/manual/bridge/action", {name: control === "homing" ? "homing" : "set_mode", args});
+    await request("/manual/bridge/action", {name: ["homing", "back"].includes(control) ? control : "set_mode", args});
     $("bridge-error").textContent = "";
     if (status.pending) {
       status.pending.phase = control === "idle" && status.pending.phase === "adjusting" ? "finishing" : "queued";
@@ -625,6 +626,7 @@ document.addEventListener("keydown", event => {
   if (key === " " && status?.control_mode !== "bridge") button = $("ack");
   else if (status?.control_mode === "bridge") {
     if (key === "h") button = $("bridge-home");
+    if (key === "b") button = $("bridge-back");
     else if (/^[0-9]$/.test(key)) {
       const phase = bridgeDigitMode() === "phase";
       const select = $(phase ? "bridge-phase" : "bridge-prompt");

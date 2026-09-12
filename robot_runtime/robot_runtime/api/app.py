@@ -392,6 +392,7 @@ def build_runtime_from_config(config: dict[str, Any]) -> RobotRuntime:
             prompt_mode=robot_config.get("prompt_mode", "fixed"),
             stop_delay_s=robot_config.get("stop_delay_s", 1.0),
             reset_delay_s=robot_config.get("reset_delay_s", 8.0),
+            back_timeout_s=robot_config.get("back_timeout_s", 300.0),
             start_delay_s=robot_config.get("start_delay_s", 0.5))
     else:
         raise ValueError(f"unsupported robot.driver: {driver_name}")

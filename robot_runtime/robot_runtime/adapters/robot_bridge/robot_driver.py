@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import threading
 import time
+from uuid import uuid4
 
 from robot_runtime.core.types import ExecutionRequest, ExecutionState
 from .clients import BridgeClient, duration
@@ -14,12 +15,14 @@ class RobotBridgeRobotDriver:
                  robot_url: str = "ws://127.0.0.1:9946", timeout_s: float = 5.0,
                  prompt_map: dict | None = None, prompt_mode: str = "fixed", stop_delay_s: float = 1.0,
                  reset_delay_s: float = 8.0, start_delay_s: float = 0.5,
+                 back_timeout_s: float = 300.0,
                  scheduler_client=None, robot_client=None,
                  emergency_scheduler_client=None, emergency_robot_client=None):
         self.scheduler_url, self.robot_url = scheduler_url, robot_url
         self.stop_delay_s = duration(stop_delay_s, "stop_delay_s", allow_zero=True)
         self.reset_delay_s = duration(reset_delay_s, "reset_delay_s", allow_zero=True)
         self.start_delay_s = duration(start_delay_s, "start_delay_s", allow_zero=True)
+        self.back_timeout_s = duration(back_timeout_s, "back_timeout_s")
         if prompt_map is not None and (not isinstance(prompt_map, dict) or any(
             not isinstance(k, str) or not k.strip() or isinstance(v, bool)
             or not isinstance(v, (str, int)) or (isinstance(v, int) and v < 0)
@@ -93,6 +96,8 @@ class RobotBridgeRobotDriver:
         try:
             state = self._state(scheduler)
             actions = state["actions"]
+            if "cancel_back" in actions and state.get("back", {}).get("phase") in {"queued", "running"}:
+                self._action(scheduler, "cancel_back", token=token)
             if "set_mode" in actions:
                 self._action(scheduler, "set_mode", {"mode": "idle"}, token)
             elif "toggle_single_step" in actions and isinstance(state.get("single_step"), bool):
@@ -209,6 +214,55 @@ class RobotBridgeRobotDriver:
         if "set_mode" not in state["actions"] or "teleop" not in state.get("modes", []):
             raise ValueError("scheduler does not support teleoperation adjustment")
         return self._action(self._scheduler, "set_mode", {"mode": "teleop"}, cancelled)
+
+    def back(self, *, cancelled=None) -> dict:
+        token = self._begin("back", self._last_control.get("execution_id"), cancelled)
+        operation_id = uuid4().hex
+        requested = False
+        try:
+            state = self._state(self._scheduler)
+            if not {"back", "cancel_back"}.issubset(state["actions"]):
+                raise RuntimeError("Scheduler/Robot Server does not support back; update robot-bridge")
+            self._park(self._scheduler, self._robot, token)
+            requested = True  # A lost response can still mean motion was accepted.
+            self._action(self._scheduler, "back", {"operation_id": operation_id}, token)
+            deadline = time.monotonic() + self.back_timeout_s
+            while True:
+                self._check_cancelled(token)
+                state = self._state(self._scheduler).get("back", {})
+                if state.get("operation_id") != operation_id:
+                    raise RuntimeError("Scheduler returned a mismatched back operation")
+                if state.get("phase") == "completed":
+                    if state.get("back") is not True:
+                        raise RuntimeError("back completion lacks execution acknowledgement")
+                    token.wait(self.stop_delay_s)
+                    self._check_cancelled(token)
+                    return {**state, "recovered": True, "recovery_method": "back", "homed": False,
+                            "completion_basis": "sdk_dispatch_and_delay", "wait_s": self.stop_delay_s}
+                if state.get("phase") in {"failed", "cancelled"}:
+                    raise RuntimeError(state.get("error", "back failed"))
+                if state.get("phase") not in {"queued", "running"}:
+                    raise RuntimeError("Scheduler returned an invalid back phase")
+                if time.monotonic() >= deadline:
+                    raise RuntimeError(f"back timed out after {self.back_timeout_s}s")
+                token.wait(0.1)
+        except Exception as exc:
+            if requested:
+                # Independent connections remain available after a lost reply.
+                errors = []
+                try:
+                    self._action(self._emergency_scheduler, "cancel_back", {"operation_id": operation_id})
+                except Exception as cancel_exc:
+                    errors.append(f"cancel_back: {cancel_exc}")
+                try:
+                    self._park(self._emergency_scheduler, self._emergency_robot)
+                except Exception as stop_exc:
+                    errors.append(f"stop: {stop_exc}")
+                if errors:
+                    raise RuntimeError(f"{exc}; cleanup failed: {'; '.join(errors)}") from exc
+            raise
+        finally:
+            self._finish(token)
 
     def end_adjustment(self, *, cancelled=None) -> dict:
         self._park(self._scheduler, self._robot, cancelled)

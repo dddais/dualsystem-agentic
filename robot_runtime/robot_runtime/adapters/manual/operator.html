@@ -167,7 +167,7 @@ td:nth-child(n+2), th:nth-child(n+2) { text-align: right; font-variant-numeric: 
 <p id="manual-space-help"><kbd>Space</kbd> 原 manual 模式：确认人工操作完成。</p>
 <div id="bridge-shortcuts" hidden>
 <p><kbd>R</kbd> 开始 / 停止录制 · <kbd>I</kbd> 空闲 · <kbd>T</kbd> 遥操作 · <kbd>A</kbd> 自主运行</p>
-<p><kbd>S</kbd> 切换单步模式 · <kbd>Enter</kbd> 下一步 · <kbd>H</kbd> Homing 归位</p>
+<p><kbd>S</kbd> 切换单步模式 · <kbd>Enter</kbd> 下一步 · <kbd>H</kbd> Homing 归位 · <kbd>B</kbd> Back 回退</p>
 <p><kbd>0–9</kbd> 设置 Phase / Prompt（索引从 0 开始） · <kbd>P</kbd> 切换数字键用途 · <kbd>L</kbd> 锁定 / 解锁 Phase</p>
 <p><kbd>[</kbd> / <kbd>]</kbd> 减少 / 增加 latency_step</p>
 </div>
@@ -183,6 +183,7 @@ td:nth-child(n+2), th:nth-child(n+2) { text-align: right; font-variant-numeric: 
 <button id="bridge-teleop" data-control="teleop" data-mode="teleop" data-shortcut="T" aria-keyshortcuts="t">遥操作 / 调整</button>
 <button id="bridge-autonomous" data-control="autonomous" data-mode="autonomous" data-shortcut="A" aria-keyshortcuts="a">自主运行 / 开始</button>
 <button id="bridge-home" data-control="homing" data-shortcut="H" aria-keyshortcuts="h">Homing / 归位</button>
+<button id="bridge-back" data-control="back" data-shortcut="B" aria-keyshortcuts="b">Back / 回退</button>
 <button id="bridge-estop" class="danger" hidden>立即软件停止</button></div>
 <p id="bridge-auto-stop" class="hint"></p><p id="bridge-error" class="error" role="alert"></p></section>
 <div id="bridge-controls">

@@ -12,6 +12,8 @@ robot:
   start_delay_s: 0.5
   stop_delay_s: 1.0
   reset_delay_s: 8.0
+  # Back waits for the execution worker's completion; this is a timeout, not a delay.
+  back_timeout_s: 300.0
   # Send the same literal instruction to VLA and VLM; requires updated Scheduler.
   prompt_mode: text
   # Used only by legacy fixed-prompt executions; web tasks always use text.

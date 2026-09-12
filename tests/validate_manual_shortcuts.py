@@ -85,6 +85,51 @@ def check_plain_manual(browser, pool):
         runtime.close()
 
 
+def check_back(browser, pool):
+    from test_manual_back import enable_back
+
+    backend, scheduler, _ = bridge(KeyboardScheduler())
+    finish, _ = enable_back(scheduler)
+    driver = ManualBridgeRobotDriver(operator_timeout_s=10, bridge_driver=backend, control_client=scheduler)
+    runtime = RobotRuntime(robot_type="test", robot_driver=driver, camera_provider=None,
+                           monitor_provider=LocalMemoryMonitorProvider())
+    page = browser.new_page()
+    errors = []
+    page.on("pageerror", lambda error: errors.append(str(error)))
+    page.route("**/observations/latest/metadata", lambda route: route.fulfill(
+        status=503, json={"success": False, "message": "No camera in keyboard test"}))
+    try:
+        with serve(create_app(runtime)) as url:
+            page.goto(url + "/manual")
+            expect(page.locator("#bridge-back")).to_be_disabled()
+            start = pool.submit(runtime.create_execution, {"subtask": "pick cup"})
+            expect(page.locator("#bridge-autonomous")).to_be_enabled()
+            page.locator("#bridge-autonomous").click()
+            start.result(3)
+            expect(page.locator("#bridge-back")).to_be_disabled()
+            stop = pool.submit(runtime.stop)
+            expect(page.locator("#action-title")).to_have_text("等待停止")
+            page.locator("#bridge-idle").click()
+            stop.result(3)
+            recovery = pool.submit(runtime.recover)
+            expect(page.locator("#bridge-back")).to_be_enabled()
+            page.locator("h1").click()
+            page.keyboard.press("b")
+            expect(page.locator("#action-title")).to_have_text("回退中")
+            expect(page.locator("#bridge-back")).to_be_disabled()
+            page.keyboard.press("b")
+            assert not recovery.done()
+            finish.set()
+            assert recovery.result(3)["recovery_method"] == "back"
+            assert [c.get("name") for c in scheduler.calls].count("back") == 1
+            page.set_viewport_size({"width": 390, "height": 844})
+            assert page.evaluate("document.documentElement.scrollWidth <= innerWidth")
+            assert not errors, errors
+    finally:
+        page.close()
+        runtime.close()
+
+
 def main():
     backend, scheduler, _ = bridge(KeyboardScheduler(), start_delay_s=.4)
     driver = ManualBridgeRobotDriver(operator_timeout_s=20, bridge_driver=backend, control_client=scheduler)
@@ -110,11 +155,14 @@ def main():
                     page.keyboard.press(key)
 
                 def command(key, name, args=None, *, focused=False):
+                    expected_args = args or {}
+                    if name == "toggle_recording" and not scheduler.state["recording"]:
+                        expected_args = {"person": page.locator("#bridge-person").input_value(), **expected_args}
                     with page.expect_response(lambda response: response.request.method == "POST"
                                               and response.url.endswith("/manual/bridge/action")) as response:
                         page.keyboard.press(key) if focused else press(key)
                     assert response.value.status == 200, response.value.text()
-                    assert posts[-1] == {"name":name, "args":args or {}}
+                    assert posts[-1] == {"name":name, "args":expected_args}, posts[-1]
                     expect(page.locator("#bridge-record")).to_be_enabled()  # Includes refreshed Scheduler state.
 
                 def no_commands(keys, *, focused=False):
@@ -141,7 +189,7 @@ def main():
 
                 for selector in ["#target", "#bridge-person", "#bridge-scale", "#bridge-phase", "#bridge-prompt"]:
                     page.locator(selector).focus()
-                    no_commands(["r", "s", "1", "p", "h"], focused=True)
+                    no_commands(["r", "s", "1", "p", "h", "b"], focused=True)
                 page.locator("#mode-instruction").click()
                 for selector in ["#full-instruction", "#target-queries"]:
                     page.locator(selector).focus()
@@ -238,8 +286,9 @@ def main():
                 assert [call.get("name") for call in scheduler.calls].count("homing") == 1
                 assert not errors, errors
             check_plain_manual(browser, pool)
+            check_back(browser, pool)
             browser.close()
-        print("PASS: keyboard mappings, typing/IME/modifiers/repeat guards, native focus, capability/disconnect/lifecycle gates, prompt lock and mobile layout")
+        print("PASS: keyboard mappings including Back, typing/IME/modifiers/repeat guards, native focus, capability/disconnect/lifecycle gates, prompt lock and mobile layout")
     finally:
         runtime.close()
 
