@@ -13,7 +13,7 @@
 | 启动中 / 执行中 | 空闲 I | 取消本轮、暂停 Scheduler、清理动作队列，完成停止后关闭本轮 Monitor |
 | 执行中，GRM 判定成功或失败 | auto_stop: false 时继续执行和评分；true 时自动停止 | false 保持执行中；true 停止后等待恢复选择 |
 | 等待恢复 | Homing H | 归位中，等待配置的归位时间后进入 ready |
-| 等待恢复 | Back B（新版 X1 Pro 支持） | 倒放双臂轨迹和夹爪动作，退到上次抓取准备开始前 10 个策略步；执行端报告完成后进入 ready |
+| 等待恢复 | Back B（新版 X1 Pro 支持） | 倒放到上次抓取准备前 10 个策略步；完成后仍保持停止并等待恢复，可接 Homing、遥操作或继续 Back |
 | 等待恢复 | 遥操作 T | 进入调整；VLA 自主运行和 GRM 评分保持停止 |
 | 调整中 | 空闲 I | 结束遥操作，清理动作队列并等待停止延时，进入 ready |
 | 软件停止已锁存 | Homing H | 归位成功后解除锁存；此时不允许通过遥操作调整解除锁存 |
@@ -21,7 +21,7 @@
 停止后的正常路径为：
 
 - 停止 → Homing 归位 → ready → 下一轮。
-- 停止 → Back 回退 → ready → 下一轮。详见 [Back 轨迹回退](manual_bridge_back.md)。
+- 停止 → Back 回退 → 等待恢复 → Homing 或遥操作调整 → ready。详见 [Back 轨迹回退](manual_bridge_back.md)。
 - 停止 → 遥操作调整 → 空闲结束调整 → ready → 下一轮。
 
 **调整完成由切回空闲表达**，不额外添加“已调整”确认按钮。执行中不允许直接切遥操作，
@@ -79,7 +79,8 @@ MCP 中继续使用 `DUAL_FRANKA_ENABLE_RESET: "true"`，同时开放 `reset_tas
 `recover_task`。后者调用 `POST /control/recover`，携带本轮 `execution_id`，等待恢复分支完成。
 
 顶层 loop 仍是 ready → executing → recovering → ready；recovering 内部由 Runtime
-负责停止、等待选择、归位或调整。`recover_task` 返回 `recovered: true` 才能进入下一轮。
+负责停止、等待选择、回退、归位或调整。Back 完成后仍在 recovering，Scheduler 保持 idle/暂停；
+只有归位或调整完成，`recover_task` 才返回 `recovered: true` 并进入下一轮。
 调整结果明确为 `recovery_method: teleop_adjustment, homed: false`，不会冒充物理归位。
 `reset_task` / `/control/reset` 仍只表示原归位流程；原 `manual` 的 recover_task 回退到人工归位。
 
@@ -97,6 +98,7 @@ MCP 中继续使用 `DUAL_FRANKA_ENABLE_RESET: "true"`，同时开放 `reset_tas
 - 刷新或关闭网页不会替操作员结束调整。重新打开页面可继续选择空闲。
   `operator_timeout_s` 分别限制等待选择和调整持续时间，默认各 300 秒。
 - 调整超时、命令失败或软件停止时，会尝试切空闲并清队列，保留恢复未完成状态；不放行下一轮。
+  普通 Back 失败会显示错误并重新等待恢复选择，可以直接接 Homing 或遥操作，不结束 loop 的恢复调用。
   恢复调用失败时 loop 沿用原来的失败退出策略。可以通过 Homing 处理恢复，然后重启 loop；
   最后操作的错误会显示在页面。软件停止后只允许 Homing 解除锁存。
 - 归位或调整的迟到成功回执不能清除后来发生的软件停止锁存。

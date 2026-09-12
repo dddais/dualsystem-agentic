@@ -85,7 +85,7 @@ def check_plain_manual(browser, pool):
         runtime.close()
 
 
-def check_back(browser, pool):
+def check_back(browser, pool, following):
     from test_manual_back import enable_back
 
     backend, scheduler, _ = bridge(KeyboardScheduler())
@@ -120,7 +120,17 @@ def check_back(browser, pool):
             page.keyboard.press("b")
             assert not recovery.done()
             finish.set()
-            assert recovery.result(3)["recovery_method"] == "back"
+            expect(page.locator("#action-title")).to_have_text("已停止 · 回退完成")
+            expect(page.locator("#bridge-home")).to_be_enabled()
+            expect(page.locator("#bridge-teleop")).to_be_enabled()
+            expect(page.locator("#bridge-autonomous")).to_be_disabled()
+            assert not recovery.done() and runtime.manual_snapshot()["recovery_required"]
+            page.keyboard.press("h" if following == "homing" else "t")
+            if following == "teleop":
+                expect(page.locator("#action-title")).to_have_text("调整中")
+                assert not recovery.done()
+                page.keyboard.press("i")
+            assert recovery.result(3)["recovery_method"] == ("homing" if following == "homing" else "teleop_adjustment")
             assert [c.get("name") for c in scheduler.calls].count("back") == 1
             page.set_viewport_size({"width": 390, "height": 844})
             assert page.evaluate("document.documentElement.scrollWidth <= innerWidth")
@@ -286,7 +296,8 @@ def main():
                 assert [call.get("name") for call in scheduler.calls].count("homing") == 1
                 assert not errors, errors
             check_plain_manual(browser, pool)
-            check_back(browser, pool)
+            for following in ("homing", "teleop"):
+                check_back(browser, pool, following)
             browser.close()
         print("PASS: keyboard mappings including Back, typing/IME/modifiers/repeat guards, native focus, capability/disconnect/lifecycle gates, prompt lock and mobile layout")
     finally:

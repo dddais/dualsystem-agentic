@@ -124,7 +124,7 @@ class SimpleRobotLoop:
             raise RuntimeError("stop tool did not acknowledge stop")
         if stopped.get("monitor_cleanup_error"):
             self.write(f"[warning] 机器人已停止，Monitor 清理失败: {stopped['monitor_cleanup_error']}")
-        self.write("[recovering] 等待归位，或遥操作调整后切空闲")
+        self.write("[recovering] 可先回退；完成后仍等待归位，或遥操作调整后切空闲")
         recovered = self._call(self.recover_tool, {"execution_id": self.identity["execution_id"]})
         if recovered.get("recovered") is not True and recovered.get("reset") is not True:
             raise RuntimeError("recovery tool did not acknowledge completed recovery")

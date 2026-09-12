@@ -28,7 +28,7 @@ been removed; this adapter targets the runtime API only.
 | `execute` | `POST /executions` + initial `POST /monitors/status` query | controller-started subtask; returns `execution_id`, `monitor_id`, and initial status |
 | `stop_task` | `POST /control/stop` | stop |
 | `reset_task` | hidden by default; `POST /control/reset` when enabled | reset |
-| `recover_task` | enabled by `DUAL_FRANKA_ENABLE_RESET`; `POST /control/recover` | homing or manual_bridge teleoperation adjustment |
+| `recover_task` | enabled by `DUAL_FRANKA_ENABLE_RESET`; `POST /control/recover` | optional Back stays in recovery; homing or manual_bridge teleoperation adjustment completes recovery |
 | `emergency_stop` | `POST /control/emergency_stop` | emergency stop |
 
 The agent loop starts robot motion with `decision="execute"` and injects the

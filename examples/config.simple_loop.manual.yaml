@@ -1,4 +1,4 @@
-# Operator waits can last 300 seconds. Allow startup plus cancellation cleanup.
+# Allow choosing Back, its execution, another operator wait and teleop adjustment.
 mcp:
   provider: sdk
   servers:
@@ -10,13 +10,13 @@ mcp:
         DUAL_FRANKA_RUNTIME_URL: ${DUAL_FRANKA_RUNTIME_URL}
         DUAL_FRANKA_ENABLE_RESET: "true"
         DUAL_FRANKA_UNKNOWN_STATUS: failed
-        DUAL_FRANKA_TIMEOUT_S: 660.0
+        DUAL_FRANKA_TIMEOUT_S: 1320.0
 
 loop:
   monitor_poll_interval_s: 1.0
 
 simple_loop:
-  # manual_bridge: choose Homing or teleoperation adjustment in VLA controls.
+  # manual_bridge: optional Back, then Homing or teleoperation adjustment.
   # Original manual falls back to its existing manual reset confirmation.
   recover_tool: recover_task
   input_source: web

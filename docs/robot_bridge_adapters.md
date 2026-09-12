@@ -62,7 +62,7 @@ PYTHONPATH=src python examples/run_simple_robot.py --config examples/config.simp
 [manual_start.md](manual_start.md)。需要键盘输入时使用 `--input-source terminal`。
 
 `robot.operator_timeout_s` 默认 300 秒。manual loop 配置将 MCP HTTP 超时设为
-660 秒，容纳参考帧等待、人工操作和异常清理；实际运行/首评分超时从 execute
+1320 秒，容纳参考帧等待、人工操作、Back 后的再次选择与调整和异常清理；实际运行/首评分超时从 execute
 返回后开始计算。停止请求可取消尚未确认的开始/归位等待，取消开始后仍会提示人工
 停止，以处理“已经操作机器人但还没点按钮”的情况。
 
@@ -109,7 +109,8 @@ PYTHONPATH=src python examples/run_simple_robot.py \
 4. 停止后选择“Homing / 归位”（H），等 `reset_delay_s` 后返回 ready；或选择“遥操作 / 调整”（T），
    调整完成后再切空闲（I），停止遥操作并返回 ready。调整分支不发送 homing。
    更新 Robot Server 和 Scheduler 后，也可选“Back / 回退”（B），沿双臂已下发轨迹
-   和夹爪动作倒放，退到上次抓取准备开始前 10 个策略步，执行完成后返回 ready。
+   和夹爪动作倒放，退到上次抓取准备开始前 10 个策略步。完成后仍保持停止，
+   loop 留在 recovering，继续选择 Homing 或遥操作调整后才返回 ready。
    语义、参数、更新要求和验证见 [Back 轨迹回退](manual_bridge_back.md)。
 5. 下一轮直接点击 A，持续复用已保存的 instruction 和检测目标，直到修改并再次保存。
    执行或恢复期间保存只影响下一次开始；每轮仍建立新的 Monitor 和参考帧。

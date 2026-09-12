@@ -7,6 +7,8 @@ and monitor activation remains downstream of successful VLA startup.
 
 from dataclasses import dataclass, field
 import threading
+import time
+from uuid import uuid4
 
 from robot_runtime.adapters.manual.robot_driver import ManualRobotDriver, _OperatorRequest
 from robot_runtime.adapters.robot_bridge.clients import BridgeClient
@@ -23,11 +25,13 @@ class _ControlRequest(_OperatorRequest):
     allow_adjustment: bool = False
     allow_back: bool = False
     trigger: str = "operator"
+    back_results: list[dict] = field(default_factory=list)
 
     def public(self):
         return {**super().public(), "phase": self.phase, "error": self.error,
                 "choice": self.choice, "allow_adjustment": self.allow_adjustment,
-                "allow_back": self.allow_back, "trigger": self.trigger}
+                "allow_back": self.allow_back, "trigger": self.trigger,
+                "last_back": self.back_results[-1] if self.back_results else None}
 
 
 class ManualBridgeRobotDriver(ManualRobotDriver):
@@ -149,19 +153,25 @@ class ManualBridgeRobotDriver(ManualRobotDriver):
                     pending.clicked.set()
         if owner:
             try:
-                clicked = pending.clicked.wait(self.operator_timeout_s)
-                with self._lock:
-                    if pending.error:
-                        raise RuntimeError(pending.error)
-                    if not clicked:
-                        raise RuntimeError(f"operator {action} timed out after {self.operator_timeout_s}s")
-                    pending.phase = "running"
+                while True:
+                    clicked = pending.clicked.wait(self.operator_timeout_s)
+                    with self._lock:
+                        if pending.error:
+                            raise RuntimeError(pending.error)
+                        if not clicked:
+                            raise RuntimeError(f"operator {action} timed out after {self.operator_timeout_s}s")
+                        pending.phase = "running"
+                    if action != "recover" or pending.choice != "back":
+                        break
+                    try:
+                        result = self.bridge.back(cancelled=pending.cancelled)
+                    except Exception as exc:
+                        result = {"phase": "failed", "back": False, "error": str(exc)}
+                    self._continue_after_back(pending, result)
                 if action == "execute":
                     result = self.bridge.execute(*self._execute_args, cancelled=pending.cancelled)
                 elif action == "stop":
                     result = self.bridge.stop(execution_id)
-                elif action == "recover" and pending.choice == "back":
-                    result = self.bridge.back(cancelled=pending.cancelled)
                 elif action == "recover" and pending.choice == "teleop":
                     self.bridge.begin_adjustment(cancelled=pending.cancelled)
                     with self._lock:
@@ -182,6 +192,8 @@ class ManualBridgeRobotDriver(ManualRobotDriver):
                         raise RuntimeError(pending.error)
                     pending.result = {**result, "manual": True, "provider": "manual_bridge",
                                       "operator_triggered": pending.trigger == "operator", "request_id": pending.request_id}
+                    if pending.back_results:
+                        pending.result["back_results"] = list(pending.back_results)
                     pending.phase = "completed"
             except Exception as exc:
                 if action == "recover" and pending.choice == "teleop":
@@ -205,6 +217,26 @@ class ManualBridgeRobotDriver(ManualRobotDriver):
         if pending.error:
             raise RuntimeError(pending.error)
         return dict(pending.result)
+
+    def _continue_after_back(self, pending, result):
+        """Back is an intermediate recovery action; Homing/adjustment ends it.
+
+        Keep the same completion event for any recovery waiters, but issue a
+        fresh click ID. Retrying the old Back request cannot undo another grasp.
+        A normal Back failure also leaves this gate open for Homing/adjustment.
+        """
+        with self._lock:
+            if pending.error:
+                raise RuntimeError(pending.error)
+            self.bridge._check_cancelled(pending.cancelled)
+            result = {**result, "recovered": False, "recovery_required": True,
+                      "request_id": pending.request_id}
+            pending.back_results.append(result)
+            self._last_operation = {**pending.public(), "phase": result["phase"],
+                                    "error": result.get("error"), "result": dict(result)}
+            pending.clicked.clear()
+            pending.choice, pending.phase = None, "waiting"
+            pending.request_id, pending.created_at = uuid4().hex, time.time()
 
     def cancel_pending(self, execution_id=None):
         with self._lock:

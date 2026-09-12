@@ -164,7 +164,7 @@ async def list_tools() -> list[types.Tool]:
     )
     if ENABLE_RESET:
         tools.append(types.Tool(
-            name="recover_task", description="After stop, wait for homing or operator teleoperation adjustment; returns recovered=true.",
+            name="recover_task", description="After stop, wait for homing or operator teleoperation adjustment; optional Back stays in recovery. Returns recovered=true only after homing/adjustment.",
             inputSchema={"type": "object", "properties": {"execution_id": {"type": "string"}}}))
         tools.append(
             types.Tool(

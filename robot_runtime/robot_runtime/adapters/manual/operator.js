@@ -10,13 +10,14 @@ const bridgeActions = {
   execute: ["等待启动", "参考帧已就绪。在 VLA 控制中选择自主运行，设置本轮指令并启动评分。"],
   stop: ["等待停止", "在 VLA 控制中选择空闲，停止本轮执行与评分。"],
   reset: ["等待归位", "在 VLA 控制中选择 Homing，完成后进入下一轮。"],
-  recover: ["等待恢复", "选择 Homing 归位、Back 倒放轨迹和夹爪动作以退回上次抓取准备之前，或遥操作调整。"]
+  recover: ["已停止 · 等待恢复", "可先 Back 倒放轨迹和夹爪动作；回退后仍保持停止，再选择 Homing，或遥操作调整后切空闲。"]
 };
 function loopState() {
   const p = status?.pending;
   if (p?.phase === "adjusting") return ["调整中", "通过遥操作调整机械臂和场景，完成后选择空闲；本阶段不运行 GRM。"];
   if (p?.phase === "finishing") return ["结束调整", "正在切回空闲并清理动作队列，请等待完成。"];
   if (p && p.phase !== "waiting") return [p.action === "stop" ? "停止中" : p.choice === "homing" ? "归位中" : p.choice === "back" ? "回退中" : p.choice === "teleop" ? "进入调整" : "启动中", "正在执行命令，请等待完成。"];
+  if (p?.action === "recover" && p.last_back) return [p.last_back.back ? "已停止 · 回退完成" : "已停止 · 回退失败", "本轮仍在恢复阶段。可继续回退，或选择 Homing、遥操作调整；完成归位或调整后才能开始下一轮。"];
   if (p) return bridgeActions[p.action];
   if (status?.estop_latched) return ["软件停止已锁存", "完成 Homing 归位后才能开始下一轮。"];
   if (status?.active_execution_id) return status.execution?.driver_result?.executed

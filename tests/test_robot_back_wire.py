@@ -128,6 +128,28 @@ def test_duplicate_back_command_has_one_robot_dispatch(stack, monkeypatch):
         client.close()
 
 
+def test_worker_failure_diagnostics_survive_scheduler_transport(stack, monkeypatch):
+    robot, _, scheduler, _, control_url = stack
+    robot_back(monkeypatch, robot, scheduler)
+    client = BridgeClient(control_url, json_protocol=True)
+    diagnostics = {"samples": 250, "gripper_change_threshold": .1,
+                   "grippers": {"left": {"min": .2, "max": .24, "range": .04}}}
+    try:
+        client.call({"cmd": "action", "name": "back", "args": {"operation_id": "small-grip"}})
+        with ThreadPoolExecutor() as pool:
+            operation = pool.submit(scheduler.build_obs_request)
+            wait_until(lambda: robot.back_calls)
+            robot.back_state.update(phase="failed", error="no retained gripper interaction; threshold=0.1",
+                                    error_code="no_gripper_interaction", diagnostics=diagnostics)
+            operation.result(3)
+        state = client.call({"cmd": "status"})["state"]["back"]
+        assert state["phase"] == "failed" and state["error_code"] == "no_gripper_interaction"
+        assert state["diagnostics"] == diagnostics
+        assert "threshold=0.1" in state["error"]
+    finally:
+        client.close()
+
+
 def test_request_and_cancel_during_observation_still_discards_that_prediction(stack, monkeypatch):
     robot, _, scheduler, _, control_url = stack
     robot_back(monkeypatch, robot, scheduler)
